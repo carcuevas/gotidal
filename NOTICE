@@ -15,3 +15,10 @@ list. Notably:
     source code or binary is included in or linked into this project.
   - LRCLIB (https://lrclib.net) — a free, public API used at runtime to
     fetch synced lyrics. No LRCLIB code is included in this project.
+  - github.com/mattn/go-sixel and github.com/soniakeys/quant, both
+    MIT-licensed — used for Sixel cover-art encoding and vendored under
+    vendor/ (each with its own upstream LICENSE file preserved intact),
+    unlike cava/LRCLIB above these are compiled directly into the
+    gotidal binary. MIT is permissive and imposes no obligation beyond
+    retaining their copyright/license notices, which the vendored
+    LICENSE files already do.

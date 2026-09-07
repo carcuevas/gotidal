@@ -246,6 +246,13 @@ which is bundled or linked into gotidal itself:
 - Synced lyrics are fetched at runtime from the free, public **[LRCLIB](https://lrclib.net)**
   API.
 
+Sixel cover-art encoding is different: it's a real, compiled-in dependency —
+**[mattn/go-sixel](https://github.com/mattn/go-sixel)** and
+**[soniakeys/quant](https://github.com/soniakeys/quant)**, both MIT-licensed,
+vendored under `vendor/` with their upstream `LICENSE` files intact. MIT is
+permissive and Apache-2.0-compatible; it asks only that those notices be
+preserved, which the vendored copies already do.
+
 ---
 
 ## Further reading
