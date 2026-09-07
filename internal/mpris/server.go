@@ -7,7 +7,7 @@
 //   - org.mpris.MediaPlayer2          (Identity, CanQuit, …)
 //   - org.mpris.MediaPlayer2.Player   (PlayPause, Next, Previous, Play, Pause, Stop)
 //   - org.freedesktop.DBus.Properties (Get, GetAll — required by playerctl)
-//   - io.tidalt.App                   (OpenURL, GetState — used by client instances)
+//   - io.gotidal.App                   (OpenURL, GetState — used by client instances)
 //
 // Commands are forwarded to the caller via the Commands channel.
 // Live playback state is pushed by the parent via Server.SetState and read by
@@ -23,7 +23,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // Cmd identifies which media control event occurred.
@@ -77,14 +77,14 @@ type PlayerState struct {
 	BitPerfect   bool
 }
 
-// ErrAlreadyRunning is returned by Start when another tidalt instance already
+// ErrAlreadyRunning is returned by Start when another gotidal instance already
 // owns the MPRIS bus name. The caller should use NewClient and exit.
-var ErrAlreadyRunning = errors.New("mpris: tidalt is already running")
+var ErrAlreadyRunning = errors.New("mpris: gotidal is already running")
 
 const (
-	busName    = "org.mpris.MediaPlayer2.tidalt"
+	busName    = "org.mpris.MediaPlayer2.gotidal"
 	objectPath = "/org/mpris/MediaPlayer2"
-	appIface   = "io.tidalt.App"
+	appIface   = "io.gotidal.App"
 )
 
 // Server is a running MPRIS2 D-Bus server. Stop it by cancelling the context
@@ -135,7 +135,7 @@ func (s *sharedState) get() PlayerState {
 // cancelled, at which point the Commands channel is closed and the D-Bus name
 // is released.
 //
-// Returns ErrAlreadyRunning when another tidalt already owns the bus name.
+// Returns ErrAlreadyRunning when another gotidal already owns the bus name.
 // In that case the caller should use NewClient.
 func Start(ctx context.Context) (*Server, error) {
 	ch := make(chan Event, 4)
@@ -194,7 +194,7 @@ func Start(ctx context.Context) (*Server, error) {
 	return srv, nil
 }
 
-// Client holds a D-Bus connection to an already-running tidalt instance and
+// Client holds a D-Bus connection to an already-running gotidal instance and
 // exposes methods to control it. Close it when done.
 type Client struct {
 	conn *dbus.Conn
@@ -202,7 +202,7 @@ type Client struct {
 }
 
 // NewClient connects to the session bus and returns a Client targeting the
-// running tidalt MPRIS server. Returns an error if no instance is running.
+// running gotidal MPRIS server. Returns an error if no instance is running.
 func NewClient() (*Client, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
@@ -350,14 +350,14 @@ func (p *mediaPlayer2Player) send(e Event) {
 	}
 }
 
-// --- io.tidalt.App ----------------------------------------------------------
+// --- io.gotidal.App ----------------------------------------------------------
 
 type tidalApp struct {
 	ch    chan<- Event
 	state *sharedState
 }
 
-// OpenURL is called by a second tidalt instance to forward a stream URL.
+// OpenURL is called by a second gotidal instance to forward a stream URL.
 func (a *tidalApp) OpenURL(url string) *dbus.Error {
 	select {
 	case a.ch <- Event{Cmd: CmdOpenURL, URL: url}:
@@ -462,7 +462,7 @@ func (p *properties) playerProps() map[string]dbus.Variant {
 // rootProps returns the fixed property map for org.mpris.MediaPlayer2.
 func rootProps() map[string]dbus.Variant {
 	return map[string]dbus.Variant{
-		"Identity":            dbus.MakeVariant("tidalt"),
+		"Identity":            dbus.MakeVariant("gotidal"),
 		"CanQuit":             dbus.MakeVariant(false),
 		"CanRaise":            dbus.MakeVariant(false),
 		"HasTrackList":        dbus.MakeVariant(false),
@@ -506,7 +506,7 @@ func (p *properties) Set(iface, prop string, val dbus.Variant) *dbus.Error {
 // --- org.freedesktop.DBus.Introspectable ------------------------------------
 //
 // Returning introspection XML lets tools like busctl, d-feet, and playerctl
-// discover exactly which interfaces, methods, signals, and properties tidalt
+// discover exactly which interfaces, methods, signals, and properties gotidal
 // exposes. This is the canonical machine-readable record of MPRIS2 support.
 
 type introspectable struct{}
@@ -587,9 +587,9 @@ const introspectionXML = `<!DOCTYPE node PUBLIC
     </method>
   </interface>
 
-  <!-- ── io.tidalt.App (private) ────────────────────────────────────── -->
-  <!-- Used by tidalt client instances and the 'tidalt play' subcommand. -->
-  <interface name="io.tidalt.App">
+  <!-- ── io.gotidal.App (private) ────────────────────────────────────── -->
+  <!-- Used by gotidal client instances and the 'gotidal play' subcommand. -->
+  <interface name="io.gotidal.App">
     <method name="OpenURL">
       <arg name="url" type="s" direction="in"/>
     </method>

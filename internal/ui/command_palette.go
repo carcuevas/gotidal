@@ -39,29 +39,31 @@ func allPaletteItems() []paletteItem {
 			return m.selectSection(sec)
 		}
 	}
-	items := []paletteItem{
-		{icon: "⤓", label: "Save queue as playlist…", hint: "creates new", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+	items := make([]paletteItem, 0, 4+len(tabEntries))
+	items = append(items,
+		paletteItem{icon: "⤓", label: "Save queue as playlist…", hint: "creates new", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
 			m.overlay = OverlayNone
 			return m.beginSaveQueue()
 		}},
-		{icon: "＋", label: "Save queue to existing playlist…", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+		paletteItem{icon: "＋", label: "Save queue to existing playlist…", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
 			m.overlay = OverlayNone
 			return m.beginSaveToExisting()
 		}},
-		{icon: "✕", label: "Clear queue", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+		paletteItem{icon: "✕", label: "Clear queue", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
 			m.overlay = OverlayNone
 			m.clearQueue()
 			return m, nil
 		}},
-		{icon: "♫", label: "Import from Spotify…", hint: "paste a URL", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+		paletteItem{icon: "♫", label: "Import from Spotify…", hint: "paste a URL", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
 			m.openImportSpotify()
 			return m, nil
 		}},
-	}
-	for _, e := range sidebarEntries {
-		if e.group != "" {
-			continue
-		}
+		paletteItem{icon: "◼", label: "Toggle CD-recorder silence gap…", hint: "off by default", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+			m.overlay = OverlayNone
+			return m.toggleInterTrackSilence()
+		}},
+	)
+	for _, e := range tabEntries {
 		sec := e.section
 		items = append(items, paletteItem{
 			icon: e.icon, label: "Go to " + e.label, group: "JUMP TO", run: jump(sec),

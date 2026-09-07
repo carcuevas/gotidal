@@ -1,6 +1,6 @@
 tidal-tui
-tidal-cache.db
-/tidalt
-tidalt-linux-*
+gotidal-cache.db
+/gotidal
+gotidal-linux-*
 /debian/
 dist/

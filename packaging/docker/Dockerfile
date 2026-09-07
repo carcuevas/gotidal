@@ -14,7 +14,7 @@ RUN dpkg --add-architecture ${TARGETARCH} && \
     rm -rf /var/lib/apt/lists/*
 
 COPY packaging/build-static-ffmpeg.sh /build-static-ffmpeg.sh
-RUN bash /build-static-ffmpeg.sh /tmp/tidalt-ffmpeg-static ${TARGETARCH}
+RUN bash /build-static-ffmpeg.sh /tmp/gotidal-ffmpeg-static ${TARGETARCH}
 
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
@@ -24,7 +24,7 @@ ARG VERSION
 
 WORKDIR /src
 COPY . .
-COPY --from=ffmpeg /tmp/tidalt-ffmpeg-static /tmp/tidalt-ffmpeg-static
+COPY --from=ffmpeg /tmp/gotidal-ffmpeg-static /tmp/gotidal-ffmpeg-static
 
 RUN dpkg --add-architecture ${TARGETARCH} && \
     apt-get update && \
@@ -43,8 +43,8 @@ RUN case "${TARGETARCH}" in \
         -trimpath \
         -buildmode=pie \
         -ldflags "-s -w -linkmode=external -X main.version=v${VERSION}" \
-        -o /out/tidalt \
-        ./cmd/tidalt
+        -o /out/gotidal \
+        ./cmd/gotidal
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # FFmpeg is statically linked into the binary, so only ALSA is needed at runtime.
@@ -54,6 +54,6 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libasound2t64 && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/tidalt /usr/local/bin/tidalt
+COPY --from=build /out/gotidal /usr/local/bin/gotidal
 
-ENTRYPOINT ["/usr/local/bin/tidalt"]
+ENTRYPOINT ["/usr/local/bin/gotidal"]

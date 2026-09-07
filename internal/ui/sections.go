@@ -7,20 +7,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // artistViewActive reports whether the transient artist drill-down is showing.
 func (m *Model) artistViewActive() bool { return m.showArtist }
 
-// renderQueuePane renders the track list for the Queue / Favorites-Songs
-// sections inside a titled panel. The Queue is split into a track list on the
-// left and a cover panel on the right showing the hovered (cursor) track's art.
+// renderQueuePane renders the Queue tab: a left column (AlbumArt / Cava /
+// Lyrics, top to bottom) and the queue track list on the right — mirroring
+// rmpc's own default Queue tab split.
 func (m *Model) renderQueuePane(t Theme, w, h int) string {
-	coverW, showCover := m.queueCoverWidth(w)
+	g := m.queueLayout(w, h)
 	listW := w
-	if showCover {
-		listW = w - coverW
+	if g.showLeft {
+		listW = g.listW
 	}
 
 	innerW := max(listW-2, 1)
@@ -42,71 +42,134 @@ func (m *Model) renderQueuePane(t Theme, w, h int) string {
 		rows = append(rows, t.RowDim.Render("Queue is empty. Search or open a mix to add tracks."))
 	}
 	listPanel := renderListPanel(t, m.queueHeader(t), m.focusMain, rows, m.cursor, listW, h)
-	if !showCover {
+	if !g.showLeft {
 		return listPanel
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, m.renderQueueCover(t, coverW, h))
+
+	leftCol := []string{m.renderAlbumArtPane(t, g)}
+	if g.showCava {
+		leftCol = append(leftCol, m.renderCavaPane(t, g.leftW, g.cavaOuterH))
+	}
+	if g.showLyrics {
+		leftCol = append(leftCol, m.renderLyricsPane(t, g.leftW, g.lyricsOuterH))
+	}
+	left := lipgloss.JoinVertical(lipgloss.Left, leftCol...)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, listPanel)
 }
 
-// minCoverPaneW and minCoverBodyH are the smallest pane width and body height
-// that can hold a legible cover panel. Below either, the cover is hidden
-// entirely rather than squashed into a sliver that overlaps the surrounding UI.
+// minQueueLeftPaneW and minQueueLeftBodyH are the smallest tab width and body
+// height that can hold the left column (AlbumArt/Cava/Lyrics) at all. Below
+// either, the whole column is hidden rather than squashed into a sliver.
 const (
-	minCoverPaneW = 70
-	minCoverBodyH = 12
+	minQueueLeftPaneW = 70
+	minQueueLeftBodyH = 12
+	cavaOuterHeight   = 4 // frameless — 4 bar rows, no border
+	lyricsMinOuterH   = 6
 )
 
-// queueCoverWidth returns the width of the Queue's right-hand cover panel and
-// whether there is room to show it (hidden on small terminals).
-func (m *Model) queueCoverWidth(paneW int) (int, bool) {
-	// Need a usable list plus a square-ish cover; require a comfortably wide
-	// pane and enough rows that the image box is not reduced to its floor.
-	if paneW < minCoverPaneW || m.bodyHeight() < minCoverBodyH {
-		return 0, false
-	}
-	w := min(max(paneW/3, 26), 44)
-	return w, true
+// queueGeom describes the Queue tab's left-column layout. Panel *OuterH
+// fields include the panel's own 2-row border.
+type queueGeom struct {
+	showLeft bool
+	leftW    int
+	listW    int
+
+	albumArtOuterH int
+	albumArtCols   int // inner (square) content cols
+	albumArtRows   int // inner (square) content rows
+
+	showCava   bool
+	cavaOuterH int
+
+	showLyrics   bool
+	lyricsOuterH int
 }
 
-// renderQueueCover renders the cover panel for the track under the cursor. The
-// crisp Kitty image (when supported) is written to the TTY separately; this
-// draws the box
-// (block art / placeholder) and the track metadata.
-func (m *Model) renderQueueCover(t Theme, w, h int) string {
-	tr := m.hoveredTrack()
-	if tr == nil {
-		return renderPanel(t, "", false, w, h, t.RowDim.Render("No track selected."))
+// queueLayout computes the Queue tab's geometry for outer size w×h. AlbumArt
+// is sized to just contain its natural square (driven by width, via
+// coverBoxDims) rather than stretching to fill the column — the leftover
+// height goes to Cava (a small fixed strip) and then Lyrics gets whatever
+// remains, which is normally the most generous of the three. On a short
+// terminal that leftover shrinks and Cava/Lyrics hide in turn; on a narrow or
+// very short one the whole column hides, matching the old cover-only panel.
+func (m *Model) queueLayout(w, h int) queueGeom {
+	var g queueGeom
+	if w < minQueueLeftPaneW || h < minQueueLeftBodyH {
+		g.listW = w
+		return g
 	}
-	panelW, imgRows := m.queueCoverDims(w, h)
+	g.showLeft = true
+	g.leftW = min(max(w/3, 26), 44)
+	g.listW = w - g.leftW
+
+	innerW := max(g.leftW-2, 1)
+	// Bound the art's height budget generously (the full column height, minus
+	// its own border) — coverBoxDims already caps rows at innerW/cellAspect,
+	// so this only ever constrains the square on a terminal too short for
+	// even that.
+	g.albumArtCols, g.albumArtRows = coverBoxDims(innerW, max(h-2, 1))
+	g.albumArtOuterH = g.albumArtRows + 2
+
+	remH := h - g.albumArtOuterH
+	if remH >= cavaOuterHeight+4 {
+		g.showCava = true
+		g.cavaOuterH = cavaOuterHeight
+		remH -= g.cavaOuterH
+	}
+	if remH >= lyricsMinOuterH {
+		g.showLyrics = true
+		g.lyricsOuterH = remH
+	} else {
+		// Too little left for a usable Lyrics panel — give it back to
+		// AlbumArt rather than rendering an unreadable sliver.
+		g.albumArtOuterH += remH
+	}
+	return g
+}
+
+// renderAlbumArtPane renders the square cover-art panel for the track under
+// the Queue cursor. The crisp Kitty image (when supported) is written to the
+// TTY separately (see syncKittyCover); this draws the reserved blank box or
+// the Unicode block-art fallback, centered within the panel's full width.
+func (m *Model) renderAlbumArtPane(t Theme, g queueGeom) string {
+	innerW := max(g.leftW-2, 1)
+	padLeft := max((innerW-g.albumArtCols)/2, 0)
+	pad := strings.Repeat(" ", padLeft)
 
 	var b strings.Builder
-	if m.useKittyCover() {
-		for range imgRows {
-			b.WriteString(strings.Repeat(" ", panelW))
+	if m.useKittyCover() || m.useSixelCover() {
+		for range g.albumArtRows {
+			b.WriteString(pad)
+			b.WriteString(strings.Repeat(" ", g.albumArtCols))
 			b.WriteByte('\n')
 		}
 	} else {
-		cover := coverPanelLines(m.coverImage, "", "", "", panelW, imgRows)
+		cover := coverPanelLines(m.coverImage, "", "", "", g.albumArtCols, g.albumArtRows)
 		for _, ln := range cover {
+			b.WriteString(pad)
 			b.WriteString(ln)
 			b.WriteByte('\n')
 		}
 	}
-	b.WriteString("\n")
-	b.WriteString(t.Row.Render(truncateStr(tr.Title, panelW)) + "\n")
-	b.WriteString(t.RowDim.Render(truncateStr(tr.Artist.Name, panelW)) + "\n")
-	b.WriteString(t.RowFaint.Render(truncateStr(tr.Album.Title, panelW)))
-
-	return renderPanel(t, "", false, w, h, b.String())
+	return renderPanel(t, "", false, g.leftW, g.albumArtOuterH, strings.TrimRight(b.String(), "\n"))
 }
 
-// queueCoverDims returns the cover image's cell width and row count inside the
-// Queue's cover panel of outer size w×h.
-func (m *Model) queueCoverDims(w, h int) (panelW, imgRows int) {
-	panelW = max(w-2, 1)
-	innerH := max(h-2, 2)
-	imgRows = min(max(innerH-4, 2), innerH)
-	return panelW, imgRows
+// renderCavaPane renders the CAVA spectrum-visualizer strip: bar heights from
+// the most recent frame cava reported (see internal/visualizer), or a static
+// placeholder when cava isn't running (not installed, or nothing playing).
+// Deliberately frameless (no border) — it sits directly between the AlbumArt
+// and Lyrics panels rather than in its own boxed "VU meter" panel.
+func (m *Model) renderCavaPane(t Theme, w, h int) string {
+	return fitBlock(renderCavaBars(t, m.cavaBars, w, h), w, h)
+}
+
+// renderLyricsPane renders the synced-lyrics panel: the line whose timestamp
+// is closest to m.currPos is highlighted, mirroring rmpc's own Lyrics pane.
+func (m *Model) renderLyricsPane(t Theme, w, h int) string {
+	innerW := max(w-2, 1)
+	innerH := max(h-2, 1)
+	body := renderLyricsBody(t, m.lyricsState, m.currPos, innerW, innerH)
+	return renderPanel(t, " Lyrics ", false, w, h, body)
 }
 
 // hoveredTrack is the track the Queue cover should show: the one under the
@@ -241,4 +304,12 @@ func (m *Model) renderArtistAlbumPane(t Theme, w, h int) string {
 // hide a terminal-drawn image.
 func (m *Model) useKittyCover() bool {
 	return m.kittySupported && m.coverImage != nil && m.overlay == OverlayNone
+}
+
+// useSixelCover reports whether the AlbumArt cover should be drawn with the
+// Sixel protocol — see useKittyCover for the shared reasoning (an overlay
+// popup wouldn't hide a terminal-drawn image, so graphics are suppressed
+// while one is open).
+func (m *Model) useSixelCover() bool {
+	return m.sixelSupported && m.coverImage != nil && m.overlay == OverlayNone
 }

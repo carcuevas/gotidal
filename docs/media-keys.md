@@ -1,7 +1,7 @@
 # Media Key Control (MPRIS2)
 
-`tidalt` registers itself on the D-Bus session bus as an MPRIS2 media player
-(`org.mpris.MediaPlayer2.tidalt`). Any client that speaks the MPRIS2 protocol
+`gotidal` registers itself on the D-Bus session bus as an MPRIS2 media player
+(`org.mpris.MediaPlayer2.gotidal`). Any client that speaks the MPRIS2 protocol
 can then control playback without the TUI needing to be focused.
 
 ## What is MPRIS2?
@@ -36,26 +36,26 @@ work. Under a normal KDE Plasma login (SDDM) this is always set.
 ### 2. Install playerctl
 
 [`playerctl`](https://github.com/altdesktop/playerctl) is the recommended way
-to control `tidalt` from keyboard shortcuts on Wayland. It works against any
+to control `gotidal` from keyboard shortcuts on Wayland. It works against any
 MPRIS2 player and is available in the Arch extra repository:
 
 ```bash
 sudo pacman -S playerctl
 ```
 
-Verify it can see `tidalt` (while `tidalt` is running):
+Verify it can see `gotidal` (while `gotidal` is running):
 
 ```bash
 playerctl --list-all
-# tidalt
+# gotidal
 ```
 
 Test the commands directly:
 
 ```bash
-playerctl --player=tidalt play-pause
-playerctl --player=tidalt next
-playerctl --player=tidalt previous
+playerctl --player=gotidal play-pause
+playerctl --player=gotidal next
+playerctl --player=gotidal previous
 ```
 
 ### 3. Bind playerctl to keyboard shortcuts in KDE
@@ -68,9 +68,9 @@ below click **Add → Global Shortcut → Command/URL**:
 
 | Name | Shortcut | Command |
 |---|---|---|
-| tidalt: Play/Pause | `Alt+-` | `playerctl --player=tidalt play-pause` |
-| tidalt: Next | `Alt+=` | `playerctl --player=tidalt next` |
-| tidalt: Previous | `Alt+0` | `playerctl --player=tidalt previous` |
+| gotidal: Play/Pause | `Alt+-` | `playerctl --player=gotidal play-pause` |
+| gotidal: Next | `Alt+=` | `playerctl --player=gotidal next` |
+| gotidal: Previous | `Alt+0` | `playerctl --player=gotidal previous` |
 
 Click **Apply** after adding all three.
 
@@ -80,7 +80,7 @@ Click **Apply** after adding all three.
 > and `Super+*` combos as these are reserved by KDE. Test that your chosen
 > keys reach Wayland before binding them using `wev`.
 
-### 4. Check that tidalt is visible on the bus
+### 4. Check that gotidal is visible on the bus
 
 `qdbus6` (from `qt6-tools`) can send D-Bus method calls directly, which is
 useful for debugging:
@@ -89,15 +89,15 @@ useful for debugging:
 sudo pacman -S qt6-tools
 ```
 
-With `tidalt` running, send a command:
+With `gotidal` running, send a command:
 
 ```bash
-qdbus6 org.mpris.MediaPlayer2.tidalt /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause
-qdbus6 org.mpris.MediaPlayer2.tidalt /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Next
-qdbus6 org.mpris.MediaPlayer2.tidalt /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Previous
+qdbus6 org.mpris.MediaPlayer2.gotidal /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause
+qdbus6 org.mpris.MediaPlayer2.gotidal /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Next
+qdbus6 org.mpris.MediaPlayer2.gotidal /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.Previous
 ```
 
-If a command produces `org.freedesktop.DBus.Error.ServiceUnknown`, `tidalt` is
+If a command produces `org.freedesktop.DBus.Error.ServiceUnknown`, `gotidal` is
 not registered on the bus — check the startup output for an `MPRIS unavailable:`
 line.
 
@@ -128,14 +128,14 @@ control playback:
 "mpris": {
     "format": "{player_icon} {title} — {artist}",
     "player-icons": {
-        "tidalt": ""
+        "gotidal": ""
     }
 }
 ```
 
 ## Fallback behaviour
 
-If `tidalt` cannot connect to the session bus (e.g. running inside a plain TTY
+If `gotidal` cannot connect to the session bus (e.g. running inside a plain TTY
 without a desktop session), the MPRIS server silently degrades — the app starts
 normally and the `Commands` channel is immediately closed. An `MPRIS
 unavailable:` message is printed to stdout but playback is unaffected. All

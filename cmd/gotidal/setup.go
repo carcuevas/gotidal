@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-//go:embed tidalt.desktop
+//go:embed gotidal.desktop
 var desktopFileContent []byte
 
 // runSetup installs the .desktop file and registers the tidal:// URL handler.
@@ -24,30 +24,30 @@ func runSetup() {
 		fatalf("mkdir %s: %v", appDir, err)
 	}
 
-	// Resolve the full path to the tidalt binary so the desktop file works
+	// Resolve the full path to the gotidal binary so the desktop file works
 	// even when the DE launches apps with a minimal PATH.
 	self, err := os.Executable()
 	if err != nil {
 		fatalf("cannot determine executable path: %v", err)
 	}
 
-	// Substitute the bare "tidalt" in the Exec line with the absolute path.
+	// Substitute the bare "gotidal" in the Exec line with the absolute path.
 	desktop := string(desktopFileContent)
-	desktop = strings.ReplaceAll(desktop, "Exec=tidalt ", "Exec="+self+" ")
+	desktop = strings.ReplaceAll(desktop, "Exec=gotidal ", "Exec="+self+" ")
 
-	destPath := filepath.Join(appDir, "tidalt.desktop")
+	destPath := filepath.Join(appDir, "gotidal.desktop")
 	stepf("Writing %s (Exec=%s play %%u)", destPath, self)
 	if err := os.WriteFile(destPath, []byte(desktop), 0o600); err != nil {
 		fatalf("write %s: %v", destPath, err)
 	}
 
 	run(false, "xdg-mime", "install", "--novendor", "--mode", "user", destPath)
-	run(false, "xdg-mime", "default", "tidalt.desktop", "x-scheme-handler/tidal")
+	run(false, "xdg-mime", "default", "gotidal.desktop", "x-scheme-handler/tidal")
 	run(true, "update-desktop-database", appDir)
 
 	fmt.Println()
 	fmt.Println("Setup complete.")
-	fmt.Println("Clicking \"Open in desktop app\" on tidal.com will now open tidalt.")
+	fmt.Println("Clicking \"Open in desktop app\" on tidal.com will now open gotidal.")
 }
 
 // step prints a human-readable description of the next action.

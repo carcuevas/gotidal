@@ -1,4 +1,4 @@
-module github.com/Benehiko/tidalt/v4
+module github.com/carcuevas/gotidal
 
 go 1.26.4
 
@@ -11,6 +11,7 @@ require (
 	github.com/docker/secrets-engine/store v0.0.23
 	github.com/docker/secrets-engine/x v0.0.25-do.not.use
 	github.com/godbus/dbus/v5 v5.1.0
+	github.com/mattn/go-sixel v0.0.12
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	go.etcd.io/bbolt v1.4.3
@@ -43,6 +44,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/text v0.35.0 // indirect

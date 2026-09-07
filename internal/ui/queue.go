@@ -1,12 +1,13 @@
 package ui
 
 import (
+	"math/rand/v2"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // enqueueEnd appends a track to the end of the live queue and marks it edited.
@@ -86,6 +87,53 @@ func (m *Model) removeFromQueue(i int) {
 	_ = m.store.SavePlaylist(m.tracks)
 }
 
+// moveQueueItem swaps the track at index i with its neighbor at i+delta
+// (delta=-1 for rmpc's MoveUp, +1 for MoveDown), keeping the cursor on the
+// moved track. Mirrors the swap into tracksOrder by ID, the same
+// best-effort approach removeFromQueue already uses for duplicate IDs.
+func (m *Model) moveQueueItem(i, delta int) {
+	j := i + delta
+	if i < 0 || j < 0 || i >= len(m.tracks) || j >= len(m.tracks) {
+		return
+	}
+	m.tracks[i], m.tracks[j] = m.tracks[j], m.tracks[i]
+
+	oi, oj := -1, -1
+	for k := range m.tracksOrder {
+		if oi < 0 && m.tracksOrder[k].ID == m.tracks[i].ID {
+			oi = k
+		}
+		if oj < 0 && m.tracksOrder[k].ID == m.tracks[j].ID {
+			oj = k
+		}
+	}
+	if oi >= 0 && oj >= 0 {
+		m.tracksOrder[oi], m.tracksOrder[oj] = m.tracksOrder[oj], m.tracksOrder[oi]
+	}
+
+	m.cursor = j
+	m.queueDirty = true
+	_ = m.store.SavePlaylist(m.tracks)
+}
+
+// reshuffleQueue performs a one-shot Fisher-Yates reshuffle of the live queue
+// order (rmpc's queue Shuffle), independent of the persistent shuffle toggle.
+func (m *Model) reshuffleQueue() {
+	if len(m.tracks) < 2 {
+		return
+	}
+	current := m.tracks[m.cursor]
+	rand.Shuffle(len(m.tracks), func(i, j int) { m.tracks[i], m.tracks[j] = m.tracks[j], m.tracks[i] })
+	for i := range m.tracks {
+		if m.tracks[i].ID == current.ID {
+			m.cursor = i
+			break
+		}
+	}
+	m.queueDirty = true
+	_ = m.store.SavePlaylist(m.tracks)
+}
+
 // loadQueueFromPlaylist replaces the live queue with a playlist's tracks and
 // records its origin so the hybrid header can show the synced/edited state.
 func (m *Model) loadQueueFromPlaylist(tracks []tidal.Track, pl tidal.Playlist) {
@@ -139,7 +187,7 @@ func (m *Model) suggestedQueueName() string {
 	if len(m.tracks) > 0 {
 		return m.tracks[0].Title + " mix"
 	}
-	return "tidalt queue"
+	return "gotidal queue"
 }
 
 // saveQueueCmd creates a new playlist named `name` and adds every queue track.
@@ -148,7 +196,7 @@ func (m *Model) saveQueueCmd(name string) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	return func() tea.Msg {
-		uuid, err := client.CreatePlaylist(ctx, name, "Saved from tidalt")
+		uuid, err := client.CreatePlaylist(ctx, name, "Saved from gotidal")
 		if err != nil {
 			return errMsg(err)
 		}

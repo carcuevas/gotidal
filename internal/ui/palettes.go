@@ -9,7 +9,7 @@ import "github.com/charmbracelet/lipgloss"
 
 func c(hex string) lipgloss.TerminalColor { return lipgloss.Color(hex) }
 
-var paletteTidalt = Palette{
+var paletteGoTidal = Palette{
 	Bg: c("#262b33"), Bg2: c("#2c323b"), BgSel: c("#323a45"), BgModal: c("#20252c"),
 	Fg: c("#c5cad3"), FgDim: c("#6c7682"), FgFaint: c("#4b545f"),
 	Cyan: c("#38b6f0"), CyanSoft: c("#5bc0f0"), Teal: c("#5fd0c5"), Green: c("#7fd6a0"),
@@ -100,7 +100,7 @@ var paletteAmber = Palette{
 // palettes maps a scheme key to its Palette. "auto" is resolved lazily via
 // autoPalette() in resolvePalette so it can sample the terminal at call time.
 var palettes = map[string]Palette{
-	"tidalt":     paletteTidalt,
+	"gotidal":    paletteGoTidal,
 	"catppuccin": paletteCatppuccin,
 	"tokyonight": paletteTokyoNight,
 	"gruvbox":    paletteGruvbox,
@@ -112,14 +112,14 @@ var palettes = map[string]Palette{
 
 // paletteOrder is the picker's display order (and the cycle order for `t`).
 var paletteOrder = []string{
-	"auto", "tidalt", "catppuccin", "tokyonight",
+	"auto", "gotidal", "catppuccin", "tokyonight",
 	"gruvbox", "nord", "rosepine", "dracula", "amber",
 }
 
 // paletteNames maps a scheme key to its human-readable label (theme picker).
 var paletteNames = map[string]string{
 	"auto":       "Auto — match terminal",
-	"tidalt":     "TIDALT",
+	"gotidal":    "goTidal",
 	"catppuccin": "Catppuccin Mocha",
 	"tokyonight": "Tokyo Night",
 	"gruvbox":    "Gruvbox Dark",
@@ -129,18 +129,23 @@ var paletteNames = map[string]string{
 	"amber":      "Amber CRT",
 }
 
-const defaultThemeName = "tidalt"
+const defaultThemeName = "gotidal"
 
 // resolvePalette returns the Palette for a scheme name, falling back to the
-// default if the name is unknown or empty.
+// default if the name is unknown or empty. "tidalt" is accepted as an alias
+// for "gotidal" so a theme choice saved before the rename still resolves
+// instead of silently reverting to the default.
 func resolvePalette(name string) Palette {
 	if name == "auto" {
 		return autoPalette()
 	}
+	if name == "tidalt" {
+		return paletteGoTidal
+	}
 	if p, ok := palettes[name]; ok {
 		return p
 	}
-	return paletteTidalt
+	return paletteGoTidal
 }
 
 // clientTint overrides a palette's focus-accent tokens with a steel-blue family

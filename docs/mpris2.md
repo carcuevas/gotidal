@@ -1,11 +1,11 @@
 # MPRIS2 support
 
-tidalt registers as an MPRIS2 media player on the D-Bus session bus. This lets
+gotidal registers as an MPRIS2 media player on the D-Bus session bus. This lets
 standard desktop tools — media keys, `playerctl`, status-bar widgets — control
-playback without the TUI being focused, and without any tidalt-specific
+playback without the TUI being focused, and without any gotidal-specific
 configuration.
 
-**Bus name:** `org.mpris.MediaPlayer2.tidalt`
+**Bus name:** `org.mpris.MediaPlayer2.gotidal`
 **Object path:** `/org/mpris/MediaPlayer2`
 
 ---
@@ -18,7 +18,7 @@ The root interface. Advertises player identity and capabilities.
 
 | Property | Value |
 |---|---|
-| `Identity` | `"tidalt"` |
+| `Identity` | `"gotidal"` |
 | `CanQuit` | `false` |
 | `CanRaise` | `false` |
 | `HasTrackList` | `false` |
@@ -82,28 +82,28 @@ The following optional MPRIS2 interfaces are not implemented:
 
 ```bash
 # One-off commands
-playerctl --player=tidalt play-pause
-playerctl --player=tidalt next
-playerctl --player=tidalt previous
+playerctl --player=gotidal play-pause
+playerctl --player=gotidal next
+playerctl --player=gotidal previous
 
 # Watch status
-playerctl --player=tidalt status
-playerctl --player=tidalt metadata
+playerctl --player=gotidal status
+playerctl --player=gotidal metadata
 
 # Follow events
-playerctl --player=tidalt --follow metadata
+playerctl --player=gotidal --follow metadata
 ```
 
-Omit `--player=tidalt` if tidalt is the only registered MPRIS2 player.
+Omit `--player=gotidal` if gotidal is the only registered MPRIS2 player.
 
 See [media-keys.md](media-keys.md) for binding these to keyboard shortcuts.
 
 ---
 
-## Private interface: `io.tidalt.App`
+## Private interface: `io.gotidal.App`
 
-This non-standard interface is used by `tidalt` client instances and the
-`tidalt play` subcommand to talk to the running server. It is not part of
+This non-standard interface is used by `gotidal` client instances and the
+`gotidal play` subcommand to talk to the running server. It is not part of
 the MPRIS2 specification.
 
 | Method | Signature | Description |

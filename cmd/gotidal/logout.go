@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/Benehiko/tidalt/v4/internal/store"
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/store"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 func runLogout() {
@@ -26,5 +26,5 @@ func runLogout() {
 	if err := vault.DeleteSession(); err != nil {
 		fatalf("logout: %v", err)
 	}
-	fmt.Println("Logged out. Run `tidalt` to log in again.")
+	fmt.Println("Logged out. Run `gotidal` to log in again.")
 }

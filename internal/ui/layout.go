@@ -8,12 +8,33 @@ import (
 )
 
 const (
-	sidebarFullW = 22 // sidebar width when the terminal is wide enough
-	sidebarIconW = 5  // icons-only sidebar for narrow terminals
-	zoneGap      = 1  // columns between sidebar and main pane
-	nowBarH      = 5  // bottom now-playing bar height (border 2 + 3 content rows)
-	footerH      = 1  // key bar
+	tabBarH = 1 // top tab-bar row
+	nowBarH = 5 // bottom now-playing bar height (border 2 + 3 content rows)
+	footerH = 1 // key bar
+
+	// cellAspect approximates a terminal cell's height:width ratio (most
+	// monospace fonts render cells roughly twice as tall as they are wide).
+	// coverBoxDims uses it so a "square" cover box is square on screen, not
+	// just square in cell count.
+	cellAspect = 2.0
 )
+
+// coverBoxDims returns the largest cell width/height that (a) fits within
+// availW×availH and (b) renders as a visual square given cellAspect. Width is
+// the driving dimension; height is derived from it and clamped down (shrinking
+// width to match) when availH is the tighter constraint.
+func coverBoxDims(availW, availH int) (cols, rows int) {
+	if availW <= 0 || availH <= 0 {
+		return 0, 0
+	}
+	cols = availW
+	rows = int(float64(cols) / cellAspect)
+	if rows > availH {
+		rows = availH
+		cols = int(float64(rows) * cellAspect)
+	}
+	return max(cols, 1), max(rows, 1)
+}
 
 // visibleWindow returns the [start,end) slice of a list of `total` items that
 // keeps `cursor` centered within a viewport of `height` rows.
@@ -128,26 +149,10 @@ func renderListPanel(t Theme, title string, focused bool, rows []string, cursor,
 	return renderPanel(t, title, focused, w, h, body)
 }
 
-// layoutDims computes the sidebar width and main-pane width for the current
-// terminal size, collapsing the sidebar on narrow terminals. A sidebarW of 0
-// means "hide the sidebar entirely".
-func (m *Model) layoutDims() (sidebarW, mainW int) {
-	switch {
-	case m.width < 40:
-		return 0, max(m.width, 1)
-	case m.width < 62:
-		sidebarW = sidebarIconW
-	default:
-		sidebarW = sidebarFullW
-	}
-	mainW = max(m.width-sidebarW-zoneGap, 1)
-	return sidebarW, mainW
-}
-
-// bodyHeight is the height available to the sidebar+main zone, above the
-// now-playing bar and footer.
+// bodyHeight is the height available to the tab content, below the tab bar and
+// above the now-playing bar and footer.
 func (m *Model) bodyHeight() int {
-	h := m.height - nowBarH - footerH
+	h := m.height - tabBarH - nowBarH - footerH
 	if m.errText != "" || m.toast != "" {
 		h--
 	}

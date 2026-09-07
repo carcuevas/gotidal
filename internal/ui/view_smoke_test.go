@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v4/internal/store"
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/store"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // asModel is a test helper for the (tea.Model -> Model) assertion.
@@ -29,7 +29,7 @@ const srcRadio = "radio"
 // newSmokeModel builds a Model without the store/client/player dependencies so
 // the render path can be exercised in isolation.
 func newSmokeModel() Model {
-	pal := paletteTidalt
+	pal := paletteGoTidal
 	ti := textinput.New()
 	tracks := []tidal.Track{
 		{ID: 1, Title: "May These Noises", Artist: tidal.Artist{ID: 9, Name: "Pierce The Veil"}, Duration: 78},
@@ -42,7 +42,7 @@ func newSmokeModel() Model {
 		section:     SecQueue,
 		focusMain:   true,
 		volume:      80,
-		themeName:   "tidalt",
+		themeName:   "gotidal",
 		palette:     pal,
 		theme:       pal.Theme(),
 		progress:    progressWithTheme(pal.Theme(), 40),
@@ -52,7 +52,6 @@ func newSmokeModel() Model {
 		mixes: []tidal.Mix{
 			{ID: "m1", Title: "Daily Mix 1", SubTitle: "Pierce The Veil, …"},
 		},
-		barHeights: [9]int{10, 20, 15, 25, 12, 30, 8, 22, 18},
 	}
 }
 
@@ -88,7 +87,8 @@ func TestViewRendersAllSectionsAndSizes(t *testing.T) {
 	}
 }
 
-// TestViewSidebarFocus exercises both focus states and the artist drill-down.
+// TestViewSidebarFocus exercises the (now-inert) focusMain flag and the
+// artist drill-down, guarding against a render panic either way.
 func TestViewSidebarFocus(t *testing.T) {
 	m := newSmokeModel()
 	m.width, m.height = 100, 30
@@ -136,8 +136,8 @@ func TestCommandPaletteFilterAndJump(t *testing.T) {
 		t.Fatalf("expected at least one match for %q", "mixes")
 	}
 	out := stripANSI(m.renderCommandPalette(m.theme))
-	if !strings.Contains(out, "Daily Mixes") {
-		t.Errorf("palette should show the Daily Mixes jump entry, got:\n%s", out)
+	if !strings.Contains(out, "Go to Mixes") {
+		t.Errorf("palette should show the Mixes jump entry, got:\n%s", out)
 	}
 
 	// Selecting the first match should switch sections and close the overlay.
@@ -178,7 +178,6 @@ func TestLibrarySectionsRender(t *testing.T) {
 	}
 	for _, c := range cases {
 		m.section = c.sec
-		m.sidebarCursor = navIndexOf(c.sec)
 		out := stripANSI(m.View())
 		if !strings.Contains(out, c.want) {
 			t.Errorf("section %v should contain %q", c.sec, c.want)
@@ -271,8 +270,8 @@ func TestThemePickerPreviewCommitRevert(t *testing.T) {
 	m.width, m.height = 96, 24
 	m.section = SecSettings
 	m.enterSettings()
-	if paletteOrder[m.themeCursor] != "tidalt" {
-		t.Fatalf("enterSettings should land on the active theme, got %q", paletteOrder[m.themeCursor])
+	if paletteOrder[m.themeCursor-settingsExtraRows] != "gotidal" {
+		t.Fatalf("enterSettings should land on the active theme, got %q", paletteOrder[m.themeCursor-settingsExtraRows])
 	}
 
 	// Move down → live preview set, but committed theme unchanged.
@@ -281,7 +280,7 @@ func TestThemePickerPreviewCommitRevert(t *testing.T) {
 	if m.previewPalette == nil {
 		t.Errorf("moving the cursor should set a live preview")
 	}
-	if m.themeName != "tidalt" {
+	if m.themeName != "gotidal" {
 		t.Errorf("preview must not commit the theme yet")
 	}
 
@@ -297,7 +296,7 @@ func TestThemePickerPreviewCommitRevert(t *testing.T) {
 	m.focusMain = true
 	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyDown})
 	m = asModel(t, res)
-	committed := paletteOrder[m.themeCursor]
+	committed := paletteOrder[m.themeCursor-settingsExtraRows]
 	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
 	m = asModel(t, res)
 	if m.themeName != committed {
@@ -334,7 +333,7 @@ func TestNoBrokenGlyphsAndDurations(t *testing.T) {
 // pane (the title is truncated instead).
 func TestRowDurationSurvivesNarrow(t *testing.T) {
 	tr := tidal.Track{Title: "An Extremely Long Song Title That Will Not Fit", Artist: tidal.Artist{Name: "Artist Name Here"}, Duration: 245}
-	row := stripANSI(renderTrackRow(paletteTidalt.Theme(), tr, rowOpts{showIndex: true, index: 1, showArtist: true, width: 40, duration: 245}))
+	row := stripANSI(renderTrackRow(paletteGoTidal.Theme(), tr, rowOpts{showIndex: true, index: 1, showArtist: true, width: 40, duration: 245}))
 	if !strings.Contains(row, "4:05") {
 		t.Errorf("duration should survive narrow width, got %q", row)
 	}

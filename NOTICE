@@ -1,0 +1,17 @@
+gotidal
+Copyright the gotidal contributors
+
+This product is a fork of tidalt (https://github.com/Benehiko/tidalt),
+originally created by Benehiko and licensed under the Apache License,
+Version 2.0. Files in this repository have been modified from the
+original project.
+
+This product includes software developed by third parties; see the
+"Dependencies" table in README.md and docs/architecture.md for the full
+list. Notably:
+
+  - cava (https://github.com/karlstav/cava), GPL-3.0 — invoked as an
+    optional external subprocess for the spectrum visualizer. No cava
+    source code or binary is included in or linked into this project.
+  - LRCLIB (https://lrclib.net) — a free, public API used at runtime to
+    fetch synced lyrics. No LRCLIB code is included in this project.

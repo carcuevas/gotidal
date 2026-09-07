@@ -6,8 +6,8 @@
 //   avcodec_dynamic.go (default) links the system-shared FFmpeg libraries.
 //   avcodec_static.go  (-tags staticav) links a self-contained static FFmpeg
 //   built under /opt/ffmpeg, for portable distro packages.
-#ifndef TIDALT_AVCODEC_H
-#define TIDALT_AVCODEC_H
+#ifndef GOTIDAL_AVCODEC_H
+#define GOTIDAL_AVCODEC_H
 
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -51,4 +51,4 @@ void av_close(av_decoder_t *d);
 // av_strerr writes the human-readable form of an FFmpeg error code into buf.
 void av_strerr(int rc, char *buf, int sz);
 
-#endif // TIDALT_AVCODEC_H
+#endif // GOTIDAL_AVCODEC_H

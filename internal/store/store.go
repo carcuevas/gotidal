@@ -22,9 +22,15 @@ import (
 type PassphraseFunc func(ctx context.Context, prompt string) ([]byte, error)
 
 const (
-	ServiceName = "tidalt"
+	ServiceName = "gotidal"
 	AccountName = "session"
-	DBFile      = "tidal-cache.db"
+	DBFile      = "gotidal-cache.db"
+
+	// oldServiceName/oldDBFile are gotidal's former name (tidalt), kept only
+	// so an existing install migrates its login session and cache in place
+	// on first run rather than losing them to the rename.
+	oldServiceName = "tidalt"
+	oldDBFile      = "tidal-cache.db"
 )
 
 func dbPath() string {
@@ -35,6 +41,69 @@ func dbPath() string {
 	dir := filepath.Join(home, ".local", "share", ServiceName)
 	_ = os.MkdirAll(dir, 0o700)
 	return filepath.Join(dir, DBFile)
+}
+
+// migrateDataDirs moves ~/.config/tidalt and ~/.local/share/tidalt to their
+// gotidal equivalents on first run after the tidalt→gotidal rename, so an
+// existing login session and cache aren't lost. Safe to call on every
+// startup — a no-op once the new directories exist. Failures are silent:
+// worst case the user re-authenticates or rebuilds the cache, which is mild
+// inconvenience, not data corruption.
+func migrateDataDirs() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	migrateDir(filepath.Join(home, ".config", oldServiceName), filepath.Join(home, ".config", ServiceName))
+
+	shareNew := filepath.Join(home, ".local", "share", ServiceName)
+	migrateDir(filepath.Join(home, ".local", "share", oldServiceName), shareNew)
+
+	// The directory above may have carried the bbolt file over under its old
+	// name; rename it too if so.
+	newDB := filepath.Join(shareNew, DBFile)
+	oldDB := filepath.Join(shareNew, oldDBFile)
+	if _, err := os.Stat(newDB); err == nil {
+		return
+	}
+	if _, err := os.Stat(oldDB); err == nil {
+		_ = os.Rename(oldDB, newDB)
+	}
+}
+
+// migrateDir renames oldDir to newDir if newDir doesn't exist yet but oldDir
+// does — a one-time, best-effort move.
+func migrateDir(oldDir, newDir string) {
+	if _, err := os.Stat(newDir); err == nil {
+		return // already migrated, or never existed under the old name
+	}
+	if _, err := os.Stat(oldDir); err != nil {
+		return // nothing to migrate
+	}
+	_ = os.Rename(oldDir, newDir)
+}
+
+// migrateKeychainSession copies a session secret stored under the old
+// (tidalt) keychain service name into the new one, if the new store doesn't
+// already have one. Best-effort: any failure here just means the user logs
+// in again — no data is lost or corrupted either way.
+func migrateKeychainSession(s store.Store) {
+	if s == nil {
+		return
+	}
+	ctx := context.Background()
+	if _, err := s.Get(ctx, secrets.MustParseID(AccountName)); err == nil {
+		return // already has a session under the new name
+	}
+	old, err := keychain.New(oldServiceName, AccountName, tidalSecretFactory)
+	if err != nil {
+		return
+	}
+	secret, err := old.Get(ctx, secrets.MustParseID(AccountName))
+	if err != nil {
+		return
+	}
+	_ = s.Upsert(ctx, secrets.MustParseID(AccountName), secret)
 }
 
 // SecretsStore handles secure storage using the docker/secrets-engine keychain or posixage fallback.
@@ -64,10 +133,15 @@ func tidalSecretFactory(ctx context.Context, id store.ID) *tidalSecret {
 // the bbolt database. Use this in client mode where the parent process already
 // holds the exclusive DB lock.
 func NewClientStore(passphrase PassphraseFunc) *SecretsStore {
+	migrateDataDirs()
+
 	var s store.Store
 	var err error
 
 	s, err = keychain.New(ServiceName, AccountName, tidalSecretFactory)
+	if err == nil {
+		migrateKeychainSession(s)
+	}
 	if err != nil {
 		home, _ := os.UserHomeDir()
 		storePath := filepath.Join(home, ".config", ServiceName, "secrets")
@@ -97,11 +171,16 @@ func NewClientStore(passphrase PassphraseFunc) *SecretsStore {
 }
 
 func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
+	migrateDataDirs()
+
 	var s store.Store
 	var err error
 
 	// 1. Try Keychain
 	s, err = keychain.New(ServiceName, AccountName, tidalSecretFactory)
+	if err == nil {
+		migrateKeychainSession(s)
+	}
 	if err != nil {
 		fmt.Printf("Warning: failed to initialize keychain: %v. Falling back to posixage.\n", err)
 
@@ -135,7 +214,7 @@ func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
 		fmt.Printf("Warning: failed to open bolt db: %v\n", err)
 	} else {
 		if err := db.Update(func(tx *bbolt.Tx) error {
-			for _, name := range []string{"Tracks", "Settings", "Cache"} {
+			for _, name := range []string{"Tracks", "Settings", "Cache", "Lyrics"} {
 				if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 					return err
 				}
@@ -196,6 +275,59 @@ func (s *SecretsStore) CacheTrack(trackID int, data any) error {
 	})
 }
 
+// CacheLyrics stores raw lyrics data (LRC synced text, plain text, or neither)
+// for a track. Callers cache a "not found" result too (an empty raw string
+// with found=false) so a track with no lyrics isn't re-queried against LRCLIB
+// every time it's hovered or played.
+func (s *SecretsStore) CacheLyrics(trackID int, raw string, found bool) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Lyrics"))
+		if b == nil {
+			return nil
+		}
+		bytes, err := json.Marshal(struct {
+			Raw   string `json:"raw"`
+			Found bool   `json:"found"`
+		}{Raw: raw, Found: found})
+		if err != nil {
+			return err
+		}
+		return b.Put(fmt.Appendf(nil, "%d", trackID), bytes)
+	})
+}
+
+// GetCachedLyrics returns a previously cached lyrics lookup for trackID.
+// ok reports whether an entry exists at all (hit or cached miss); found
+// reports whether that entry represents an actual lyrics match.
+func (s *SecretsStore) GetCachedLyrics(trackID int) (raw string, found, ok bool) {
+	if s.db == nil {
+		return "", false, false
+	}
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Lyrics"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get(fmt.Appendf(nil, "%d", trackID))
+		if v == nil {
+			return nil
+		}
+		var entry struct {
+			Raw   string `json:"raw"`
+			Found bool   `json:"found"`
+		}
+		if err := json.Unmarshal(v, &entry); err != nil {
+			return nil //nolint:nilerr // a corrupt cache entry is treated as a cache miss
+		}
+		raw, found, ok = entry.Raw, entry.Found, true
+		return nil
+	})
+	return raw, found, ok
+}
+
 func (s *SecretsStore) SaveDevice(hwName string) error {
 	if s.db == nil {
 		return nil
@@ -226,6 +358,43 @@ func (s *SecretsStore) LoadDevice() (string, error) {
 		return nil
 	})
 	return device, err
+}
+
+// SaveInterTrackSilenceMs persists the inter-track silence gap (milliseconds;
+// 0 = gapless, the default) — an advanced, off-by-default setting for feeding
+// a downstream recorder's own silence-based auto-track-detection.
+func (s *SecretsStore) SaveInterTrackSilenceMs(ms uint32) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		return b.Put([]byte("interTrackSilenceMs"), fmt.Appendf(nil, "%d", ms))
+	})
+}
+
+// LoadInterTrackSilenceMs returns the persisted inter-track silence gap, or 0
+// (gapless) if none has been saved yet.
+func (s *SecretsStore) LoadInterTrackSilenceMs() (uint32, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	var ms uint32
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("interTrackSilenceMs"))
+		if v != nil {
+			_, _ = fmt.Sscanf(string(v), "%d", &ms)
+		}
+		return nil
+	})
+	return ms, err
 }
 
 // SaveTheme persists the selected color-scheme name (a key into the UI's

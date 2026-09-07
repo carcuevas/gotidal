@@ -1,15 +1,24 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// updateSettings drives the theme picker: moving the cursor live-previews the
-// whole UI; Enter commits and persists; Esc reverts to the committed theme.
+// settingsExtraRows is the number of selectable rows before the theme list in
+// the Settings tab: the output-device row and the CD-recorder silence-gap
+// row. m.themeCursor indexes across all of it (0=device, 1=gap, 2+=themes).
+const settingsExtraRows = 2
+
+// updateSettings drives the Settings tab: j/k moves the cursor across the
+// device row, the silence-gap row, and the theme list (live-previewing while
+// on a theme row); Enter activates whichever row is selected; Esc reverts any
+// theme preview.
 func (m Model) updateSettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	total := settingsExtraRows + len(paletteOrder)
 	switch k.String() {
 	case "h", keyLeft:
 		m.cancelPreview()
@@ -22,25 +31,59 @@ func (m Model) updateSettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyUp, "k":
 		if m.themeCursor > 0 {
 			m.themeCursor--
-			m.preview(m.themeCursor)
+			m.syncSettingsPreview()
 		}
 		return m, nil
 	case keyDown, "j":
-		if m.themeCursor < len(paletteOrder)-1 {
+		if m.themeCursor < total-1 {
 			m.themeCursor++
-			m.preview(m.themeCursor)
+			m.syncSettingsPreview()
 		}
 		return m, nil
 	case keyEnter:
-		m.applyTheme(paletteOrder[m.themeCursor])
-		return m, nil
+		return m.activateSettingsRow()
 	case "t":
-		// Cycle within the picker too.
-		m.themeCursor = (m.themeCursor + 1) % len(paletteOrder)
-		m.preview(m.themeCursor)
+		// Cycle within the theme list regardless of where the cursor is.
+		i := 0
+		for j, name := range paletteOrder {
+			if name == m.themeName {
+				i = j
+				break
+			}
+		}
+		i = (i + 1) % len(paletteOrder)
+		m.themeCursor = settingsExtraRows + i
+		m.preview(i)
 		return m, nil
 	}
 	return m, nil
+}
+
+// syncSettingsPreview live-previews the theme under the cursor when it's on
+// a theme row, or cancels any preview when it's on the device/gap rows —
+// those have no "preview then commit" concept, they act immediately.
+func (m *Model) syncSettingsPreview() {
+	if m.themeCursor >= settingsExtraRows {
+		m.preview(m.themeCursor - settingsExtraRows)
+	} else {
+		m.cancelPreview()
+	}
+}
+
+// activateSettingsRow runs whatever the cursor is on: opens the output-device
+// selector, toggles the CD-recorder silence gap, or applies the highlighted
+// theme.
+func (m Model) activateSettingsRow() (tea.Model, tea.Cmd) {
+	switch m.themeCursor {
+	case 0:
+		m.openDeviceSelect()
+		return m, nil
+	case 1:
+		return m.toggleInterTrackSilence()
+	default:
+		m.applyTheme(paletteOrder[m.themeCursor-settingsExtraRows])
+		return m, nil
+	}
 }
 
 // preview sets the live-preview palette for the scheme at index i.
@@ -57,10 +100,10 @@ func (m *Model) cancelPreview() {
 // enterSettings positions the picker cursor on the active theme and starts a
 // preview so the highlighted row matches what's on screen.
 func (m *Model) enterSettings() {
-	m.themeCursor = 0
+	m.themeCursor = settingsExtraRows
 	for i, name := range paletteOrder {
 		if name == m.themeName {
-			m.themeCursor = i
+			m.themeCursor = settingsExtraRows + i
 			break
 		}
 	}
@@ -76,33 +119,64 @@ func swatch(p Palette) string {
 	return sb.String()
 }
 
-// renderThemePicker renders the Settings theme picker pane. The active scheme is
-// marked, the cursor row uses the cyan band, and a "live preview" hint shows.
+// renderSettingsActionRow renders a simple icon+label+value row (the device
+// and silence-gap rows), matching the theme rows' selection-band styling.
+func renderSettingsActionRow(t Theme, w int, icon, label, value string, selected bool) string {
+	plain := " " + icon + " " + label
+	pad := max(w-lipgloss.Width(plain)-lipgloss.Width(value)-1, 1)
+	row := plain + strings.Repeat(" ", pad) + value
+	if selected {
+		return lipgloss.NewStyle().Background(t.P.BgSel).Width(w).Render(row)
+	}
+	return t.RowDim.Render(truncateStr(row, w))
+}
+
+// renderThemePicker renders the Settings tab: the output-device row, the
+// CD-recorder silence-gap row, then the theme picker. The active scheme is
+// marked, the cursor row uses the cyan band, and a "live preview" hint shows
+// while it's on a theme row.
 func (m *Model) renderThemePicker(t Theme, w, h int) string {
 	innerW := max(w-2, 1)
-	rows := make([]string, 0, len(paletteOrder)+2)
+	rows := make([]string, 0, len(paletteOrder)+settingsExtraRows+4)
 	rows = append(rows,
-		t.RowFaint.Render(" Move with j/k to preview · ↵ apply & save · t cycle · Esc cancel"),
+		t.RowFaint.Render(" j/k Move · ↵ Select · t Cycle theme · Esc Back"),
 		"",
 	)
 
+	cursorRow := 0 // rows-slice index the cursor is on, tracked as we append
+	dev := m.displayDevice()
+	rows = append(rows, renderSettingsActionRow(t, innerW, "◆", "Output device", dev, m.themeCursor == 0))
+	if m.themeCursor == 0 {
+		cursorRow = len(rows) - 1
+	}
+
+	gapLabel := "Off (gapless)"
+	if m.interTrackSilenceMs > 0 {
+		gapLabel = fmt.Sprintf("On (%.1fs)", float64(m.interTrackSilenceMs)/1000)
+	}
+	rows = append(rows, renderSettingsActionRow(t, innerW, "◼", "CD-recorder silence gap", gapLabel, m.themeCursor == 1))
+	if m.themeCursor == 1 {
+		cursorRow = len(rows) - 1
+	}
+
+	rows = append(rows, "")
+
 	for i, name := range paletteOrder {
+		cursor := settingsExtraRows + i
 		pal := resolvePalette(name)
 		activeMark := " "
 		if name == m.themeName {
 			activeMark = "●"
 		}
 		label := paletteNames[name]
-		// The swatch keeps its own colors; the rest of the row is themed.
 		body := " " + swatch(pal) + " " + label
-		if i == m.themeCursor {
+		if cursor == m.themeCursor {
 			hint := "previewing"
-			// Measure the plain text to right-align the hint, then render the
-			// row content (swatch retains color) on the selection band color.
 			plain := " " + activeMark + " ····· " + label
 			pad := max(innerW-lipgloss.Width(plain)-len(hint)-1, 1)
 			rowText := " " + activeMark + body + strings.Repeat(" ", pad) + hint
 			rows = append(rows, lipgloss.NewStyle().Background(t.P.BgSel).Width(innerW).Render(rowText))
+			cursorRow = len(rows) - 1
 			continue
 		}
 		mark := t.RowFaint.Render(activeMark)
@@ -112,5 +186,5 @@ func (m *Model) renderThemePicker(t Theme, w, h int) string {
 		rows = append(rows, truncateStr(" "+mark+body, innerW))
 	}
 
-	return renderListPanel(t, "THEMES", m.focusMain, rows, m.themeCursor+2, w, h)
+	return renderListPanel(t, "SETTINGS", m.focusMain, rows, cursorRow, w, h)
 }

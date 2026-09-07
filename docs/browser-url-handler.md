@@ -1,7 +1,7 @@
 # Browser URL handler troubleshooting
 
 Clicking **"Open in desktop app"** on tidal.com sends a `tidal://` URL to the
-OS. `tidalt setup` registers the handler at the XDG level, but some browsers
+OS. `gotidal setup` registers the handler at the XDG level, but some browsers
 apply additional layers of protocol filtering on top of XDG that must be
 configured separately.
 
@@ -11,9 +11,9 @@ configured separately.
 
 1. Browser navigates to `tidal://track/<id>` (or similar).
 2. Browser delegates to `xdg-open "tidal://..."`.
-3. `xdg-open` looks up the registered handler (`tidalt.desktop`) and runs
-   `tidalt play tidal://track/<id>`.
-4. `tidalt play` either forwards the URL to a running instance over D-Bus, or
+3. `xdg-open` looks up the registered handler (`gotidal.desktop`) and runs
+   `gotidal play tidal://track/<id>`.
+4. `gotidal play` either forwards the URL to a running instance over D-Bus, or
    spawns a terminal with the full TUI.
 
 You can verify steps 3–4 work correctly at any time by running:
@@ -25,7 +25,7 @@ xdg-open "tidal://track/497506611"
 and then checking the log:
 
 ```bash
-cat ~/.local/share/tidalt/play.log
+cat ~/.local/share/gotidal/play.log
 ```
 
 If the log shows a successful invocation, the problem is in step 1 or 2 — the
@@ -54,7 +54,7 @@ set:
 4. Restart the browser.
 
 On the next `tidal://` click the browser will show a dialog asking which
-application to use. Choose **tidalt** (or `xdg-open` if tidalt is not listed
+application to use. Choose **gotidal** (or `xdg-open` if gotidal is not listed
 directly). The choice is saved to the profile's `handlers.json` and will not
 be asked again.
 
@@ -95,7 +95,7 @@ kreadconfig5 --file ~/.config/mimeapps.list --group "Default Applications" --key
 If the output is empty, register manually:
 
 ```bash
-xdg-mime default tidalt.desktop x-scheme-handler/tidal
+xdg-mime default gotidal.desktop x-scheme-handler/tidal
 kbuildsycoca5
 ```
 
@@ -103,13 +103,13 @@ kbuildsycoca5
 
 ## Still not working
 
-1. Run `tidalt setup` again to ensure the desktop file and MIME registration
+1. Run `gotidal setup` again to ensure the desktop file and MIME registration
    are up to date.
-2. Check `~/.local/share/tidalt/play.log` after attempting to open a URL.
+2. Check `~/.local/share/gotidal/play.log` after attempting to open a URL.
 3. Verify `xdg-mime query default x-scheme-handler/tidal` returns
-   `tidalt.desktop`.
+   `gotidal.desktop`.
 4. Verify the installed desktop file contains the full path to the binary:
    ```bash
-   grep Exec ~/.local/share/applications/tidalt.desktop
-   # Should output: Exec=/full/path/to/tidalt play %u
+   grep Exec ~/.local/share/applications/gotidal.desktop
+   # Should output: Exec=/full/path/to/gotidal play %u
    ```

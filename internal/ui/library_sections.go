@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // recordHistory prepends a track to the Recently Played list (de-duplicated,
@@ -106,7 +106,6 @@ func (m Model) playPlaylistFrom(i int) (tea.Model, tea.Cmd) {
 	}
 	m.cursor = i
 	m.section = SecQueue
-	m.sidebarCursor = navIndexOf(SecQueue)
 	track := m.tracks[i]
 	_ = m.store.CacheTrack(track.ID, track)
 	cmd := m.playTrackCmd(track)

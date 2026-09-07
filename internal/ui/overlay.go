@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // openActionSheet raises the contextual action sheet for a track.
@@ -30,12 +30,86 @@ func (m Model) updateOverlay(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateAddToPlaylist(k)
 	case OverlayImportSpotify:
 		return m.updateImportSpotify(k)
-	default:
-		if k.String() == keyEsc {
-			m.overlay = OverlayNone
-		}
+	default: // OverlayHelp, OverlaySongInfo: Esc/any key closes
+		m.overlay = OverlayNone
 		return m, nil
 	}
+}
+
+// renderHelpOverlay renders a static reference of the global keybindings
+// (rmpc's "?" / ShowHelp).
+func (m *Model) renderHelpOverlay(t Theme) string {
+	rows := [][2]string{
+		{"1-9", "Switch tab"},
+		{"Tab / gt", "Next tab"},
+		{"Shift+Tab / gT", "Previous tab"},
+		{"j/k, ↑/↓", "Move"},
+		{"gg / G", "Top / bottom"},
+		{"Ctrl+u/d", "Half page up/down"},
+		{"Ctrl+b/f", "Page up/down"},
+		{"Enter", "Play / open / confirm"},
+		{"p", "Play / pause"},
+		{"s", "Stop"},
+		{"f / b", "Seek forward / back"},
+		{"> / <", "Next / previous track"},
+		{". / ,", "Volume up / down"},
+		{"x / X", "Toggle shuffle / reshuffle queue"},
+		{"a / A", "Add to queue / add all"},
+		{"d / D", "Remove from queue / clear queue (Queue tab)"},
+		{"K / J", "Move queue item up / down"},
+		{"F", "Toggle favorite"},
+		{"r", "Start radio from selection"},
+		{"y", "Copy Tidal link"},
+		{"oo", "Select output device"},
+		{"oI", "Current song info"},
+		{"Ctrl+X", "Actions menu"},
+		{"Ctrl+S a", "Save queue as playlist"},
+		{"t", "Cycle theme"},
+		{": / Ctrl+P", "Command palette"},
+		{"/", "Search"},
+		{"q / Ctrl+C", "Quit"},
+	}
+	w := min(max(m.width-10, 40), 60)
+	innerW := w - 2
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		key := t.KeyBarKey.Render(r[0])
+		pad := max(innerW-lipgloss.Width(r[0])-lipgloss.Width(r[1])-1, 1)
+		lines = append(lines, key+strings.Repeat(" ", pad)+t.RowDim.Render(r[1]))
+	}
+	h := min(len(lines)+2, m.height-2)
+	return renderPanel(t, "KEYBINDINGS", true, w, max(h, 4), strings.Join(lines, "\n"))
+}
+
+// renderSongInfoOverlay renders track/album/quality details for the current
+// track (rmpc's oI / ShowCurrentSongInfo).
+func (m *Model) renderSongInfoOverlay(t Theme) string {
+	tr := m.currentTrack
+	if tr == nil {
+		return ""
+	}
+	w := min(max(m.width*2/3, 40), 64)
+	innerW := w - 2
+	rows := [][2]string{
+		{"Title", tr.Title},
+		{"Artist", tr.Artist.Name},
+		{"Album", tr.Album.Title},
+		{"Duration", formatTime(float64(tr.Duration))},
+		{"Quality", string(m.currentQuality)},
+		{"Device", m.activeDevice},
+	}
+	if !m.bitPerfect {
+		rows = append(rows, [2]string{"Bit-perfect", "no (plughw: fallback)"})
+	} else {
+		rows = append(rows, [2]string{"Bit-perfect", "yes"})
+	}
+	var lines []string
+	for _, r := range rows {
+		label := t.RowDim.Render(r[0] + ":")
+		lines = append(lines, label+" "+truncateStr(t.Row.Render(r[1]), innerW-lipgloss.Width(r[0])-2))
+	}
+	h := len(lines) + 2
+	return renderPanel(t, "SONG INFO", true, w, h, strings.Join(lines, "\n"))
 }
 
 // updateAddToPlaylist handles the "save queue to existing playlist" picker.

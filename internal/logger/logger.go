@@ -14,7 +14,7 @@ var L *slog.Logger
 
 func init() {
 	level := slog.LevelInfo
-	if os.Getenv("TIDALT_DEBUG") == "true" {
+	if os.Getenv("GOTIDAL_DEBUG") == "true" {
 		level = slog.LevelDebug
 	}
 
@@ -22,10 +22,10 @@ func init() {
 	if err != nil {
 		home = os.TempDir()
 	}
-	logDir := filepath.Join(home, ".local", "share", "tidalt")
+	logDir := filepath.Join(home, ".local", "share", "gotidal")
 	_ = os.MkdirAll(logDir, 0o700)
 
-	logFile := filepath.Join(logDir, "tidalt-"+time.Now().Format("20060102-150405")+".log")
+	logFile := filepath.Join(logDir, "gotidal-"+time.Now().Format("20060102-150405")+".log")
 	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: log path is computed internally, not user-supplied
 	if err != nil {
 		// Fall back to stderr if the file can't be opened.

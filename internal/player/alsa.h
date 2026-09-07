@@ -1,8 +1,8 @@
 // alsa.h — raw ALSA PCM open and format negotiation used by the bit-perfect
 // playback path. The implementation lives in alsa.c; mpv.go calls these
 // functions through cgo.
-#ifndef TIDALT_ALSA_H
-#define TIDALT_ALSA_H
+#ifndef GOTIDAL_ALSA_H
+#define GOTIDAL_ALSA_H
 
 #include <alsa/asoundlib.h>
 
@@ -37,4 +37,4 @@ int configure_hw_pcm(unsigned int channels, unsigned int rate, int bits,
                      snd_pcm_t **handle_out,
                      alsa_open_result_t *result);
 
-#endif // TIDALT_ALSA_H
+#endif // GOTIDAL_ALSA_H

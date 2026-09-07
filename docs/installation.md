@@ -2,21 +2,21 @@
 
 ## From a release (recommended)
 
-Pre-built packages are attached to every [GitHub release](https://github.com/Benehiko/tidalt/releases).
+Pre-built packages are attached to every [GitHub release](https://github.com/carcuevas/gotidal/releases).
 
 ### Arch Linux
 
 Download the `.pkg.tar.zst` from the latest release and install with pacman:
 
 ```bash
-sudo pacman -U tidalt-*.pkg.tar.zst
+sudo pacman -U gotidal-*.pkg.tar.zst
 ```
 
 Or install the build files and build it yourself with `makepkg`:
 
 ```bash
 # Clone just the packaging directory
-curl -LO https://github.com/Benehiko/tidalt/releases/latest/download/PKGBUILD
+curl -LO https://github.com/carcuevas/gotidal/releases/latest/download/PKGBUILD
 makepkg -si
 ```
 
@@ -25,7 +25,7 @@ makepkg -si
 Download the `.deb` from the latest release:
 
 ```bash
-sudo dpkg -i tidalt_*.deb
+sudo dpkg -i gotidal_*.deb
 sudo apt-get install -f   # resolve any missing dependencies
 ```
 
@@ -34,29 +34,29 @@ sudo apt-get install -f   # resolve any missing dependencies
 Download the `.rpm` from the latest release:
 
 ```bash
-sudo dnf install tidalt-*.rpm
+sudo dnf install gotidal-*.rpm
 ```
 
 ### Raw binary (any distro)
 
-Each release also attaches standalone `tidalt-linux-amd64` / `tidalt-linux-arm64`
+Each release also attaches standalone `gotidal-linux-amd64` / `gotidal-linux-arm64`
 binaries. FFmpeg is statically bundled, so the only runtime requirement is ALSA
 (`libasound2` / `alsa-lib`, present on virtually every desktop Linux):
 
 ```bash
-curl -LO https://github.com/Benehiko/tidalt/releases/latest/download/tidalt-linux-amd64
-chmod +x tidalt-linux-amd64
-sudo install -Dm755 tidalt-linux-amd64 /usr/local/bin/tidalt
+curl -LO https://github.com/carcuevas/gotidal/releases/latest/download/gotidal-linux-amd64
+chmod +x gotidal-linux-amd64
+sudo install -Dm755 gotidal-linux-amd64 /usr/local/bin/gotidal
 ```
 
 ---
 
 ## Docker
 
-The official image is published to Docker Hub at `benehiko/tidalt`:
+The official image is published to Docker Hub at `carcuevas/gotidal`:
 
 ```bash
-docker pull benehiko/tidalt:latest
+docker pull carcuevas/gotidal:latest
 ```
 
 See [docker.md](docker.md) for full usage instructions, including how to expose
@@ -85,7 +85,7 @@ sudo dnf install golang alsa-lib-devel libavformat-free-devel libavcodec-free-de
 ### go install
 
 ```bash
-go install github.com/Benehiko/tidalt/v4/cmd/tidalt@latest
+go install github.com/carcuevas/gotidal/cmd/gotidal@latest
 ```
 
 The binary is placed in `$GOPATH/bin` (typically `~/go/bin`). Make sure that
@@ -94,10 +94,10 @@ directory is on your `PATH`.
 ### Git clone
 
 ```bash
-git clone https://github.com/Benehiko/tidalt.git
-cd tidalt
-go build -o tidalt ./cmd/tidalt
-sudo install -Dm755 tidalt /usr/local/bin/tidalt
+git clone https://github.com/carcuevas/gotidal.git
+cd gotidal
+go build -o gotidal ./cmd/gotidal
+sudo install -Dm755 gotidal /usr/local/bin/gotidal
 ```
 
 ---
@@ -108,22 +108,22 @@ sudo install -Dm755 tidalt /usr/local/bin/tidalt
 
 The `setup` subcommand installs the `.desktop` file and registers the
 `tidal://` scheme so clicking **"Open in desktop app"** on tidal.com opens
-the track directly in tidalt:
+the track directly in gotidal:
 
 ```bash
-tidalt setup
+gotidal setup
 ```
 
 Output:
 
 ```
   -> Creating directory /home/user/.local/share/applications
-  -> Writing /home/user/.local/share/applications/tidalt.desktop
-  -> $ xdg-mime default tidalt.desktop x-scheme-handler/tidal
+  -> Writing /home/user/.local/share/applications/gotidal.desktop
+  -> $ xdg-mime default gotidal.desktop x-scheme-handler/tidal
   -> $ update-desktop-database /home/user/.local/share/applications
 
 Setup complete.
-Clicking "Open in desktop app" on tidal.com will now open tidalt.
+Clicking "Open in desktop app" on tidal.com will now open gotidal.
 ```
 
 Some browsers (notably Firefox and Librewolf) require an extra one-time step.
@@ -132,14 +132,14 @@ instructions.
 
 ### Run as a background daemon (optional)
 
-Install tidalt as a systemd user service so it starts at login with no
+Install gotidal as a systemd user service so it starts at login with no
 terminal window:
 
 ```bash
-tidalt setup --daemon
+gotidal setup --daemon
 ```
 
-Then open the TUI from any terminal with `tidalt`, or control playback with
+Then open the TUI from any terminal with `gotidal`, or control playback with
 `playerctl`. See [client-server.md](client-server.md) for details.
 
 ---
@@ -155,7 +155,7 @@ The easiest way to build all packages at once (requires Docker with buildx):
 
 ```bash
 docker buildx create --use
-docker buildx bake --file docker-bake.hcl --set "*.args.VERSION=3.0.0" --set "*.output=type=local,dest=dist"
+docker buildx bake --file docker-bake.hcl --set "*.args.VERSION=1.0.0" --set "*.output=type=local,dest=dist"
 ```
 
 Artifacts are written to `dist/`.
@@ -188,19 +188,19 @@ Go 1.26+ is required to compile the binary. Install it from
 Then build from a release tarball:
 
 ```bash
-VERSION=3.0.0
-curl -L "https://github.com/Benehiko/tidalt/archive/refs/tags/v${VERSION}.tar.gz" \
+VERSION=1.0.0
+curl -L "https://github.com/carcuevas/gotidal/archive/refs/tags/v${VERSION}.tar.gz" \
     | tar xz
-cd "tidalt-${VERSION}"
+cd "gotidal-${VERSION}"
 
 # Compile the binary first — debian/rules installs it directly, no Go needed at package time.
 CGO_ENABLED=1 go build -trimpath -buildmode=pie \
     -ldflags "-s -w -linkmode=external" \
-    -o tidalt-linux-amd64 ./cmd/tidalt
+    -o gotidal-linux-amd64 ./cmd/gotidal
 
 cp -r /path/to/repo/packaging/debian debian
 dpkg-buildpackage -us -uc -b
-sudo dpkg -i ../tidalt_${VERSION}-1_amd64.deb
+sudo dpkg -i ../gotidal_${VERSION}-1_amd64.deb
 ```
 
 > The `-dev` packages are only needed for the `go build` step above. The
@@ -224,20 +224,20 @@ Go 1.26+ is required. Install from [go.dev/dl](https://go.dev/dl/).
 > official packages bundle a static FFmpeg instead.
 
 ```bash
-VERSION=3.0.0
-curl -L "https://github.com/Benehiko/tidalt/archive/refs/tags/v${VERSION}.tar.gz" \
+VERSION=1.0.0
+curl -L "https://github.com/carcuevas/gotidal/archive/refs/tags/v${VERSION}.tar.gz" \
     | tar xz
-cd "tidalt-${VERSION}"
+cd "gotidal-${VERSION}"
 
 CGO_ENABLED=1 go build -trimpath -buildmode=pie \
     -ldflags "-s -w -linkmode=external" \
-    -o tidalt ./cmd/tidalt
+    -o gotidal ./cmd/gotidal
 
 mkdir -p ~/rpmbuild/SOURCES
-cp tidalt ~/rpmbuild/SOURCES/
-cp cmd/tidalt/tidalt.desktop ~/rpmbuild/SOURCES/
-cp /path/to/repo/packaging/fedora/tidalt.spec ~/rpmbuild/SPECS/
+cp gotidal ~/rpmbuild/SOURCES/
+cp cmd/gotidal/gotidal.desktop ~/rpmbuild/SOURCES/
+cp /path/to/repo/packaging/fedora/gotidal.spec ~/rpmbuild/SPECS/
 
-rpmbuild -bb --define "version_macro ${VERSION}" ~/rpmbuild/SPECS/tidalt.spec
-sudo dnf install ~/rpmbuild/RPMS/x86_64/tidalt-${VERSION}-1.*.x86_64.rpm
+rpmbuild -bb --define "version_macro ${VERSION}" ~/rpmbuild/SPECS/gotidal.spec
+sudo dnf install ~/rpmbuild/RPMS/x86_64/gotidal-${VERSION}-1.*.x86_64.rpm
 ```

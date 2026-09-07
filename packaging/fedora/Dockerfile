@@ -16,7 +16,7 @@ RUN dpkg --add-architecture ${TARGETARCH} && \
     rm -rf /var/lib/apt/lists/*
 
 COPY packaging/build-static-ffmpeg.sh /build-static-ffmpeg.sh
-RUN bash /build-static-ffmpeg.sh /tmp/tidalt-ffmpeg-static ${TARGETARCH}
+RUN bash /build-static-ffmpeg.sh /tmp/gotidal-ffmpeg-static ${TARGETARCH}
 
 # ── Build stage: cross-compile the binary, static-linking the FFmpeg above ────
 FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
@@ -26,7 +26,7 @@ ARG VERSION
 
 WORKDIR /src
 COPY . .
-COPY --from=ffmpeg /tmp/tidalt-ffmpeg-static /tmp/tidalt-ffmpeg-static
+COPY --from=ffmpeg /tmp/gotidal-ffmpeg-static /tmp/gotidal-ffmpeg-static
 
 RUN dpkg --add-architecture ${TARGETARCH} && \
     apt-get update && \
@@ -45,8 +45,8 @@ RUN case "${TARGETARCH}" in \
         -trimpath \
         -buildmode=pie \
         -ldflags "-s -w -linkmode=external -X main.version=v${VERSION}" \
-        -o /out/tidalt \
-        ./cmd/tidalt
+        -o /out/gotidal \
+        ./cmd/gotidal
 
 # ── Package stage: assemble the .rpm with rpmbuild ───────────────────────────
 FROM fedora:latest AS package
@@ -67,16 +67,16 @@ RUN case "${TARGETARCH}" in \
 
 RUN mkdir -p /root/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
-COPY --from=build /out/tidalt               /root/rpmbuild/SOURCES/tidalt
-COPY cmd/tidalt/tidalt.desktop              /root/rpmbuild/SOURCES/tidalt.desktop
-COPY packaging/fedora/tidalt.spec           /root/rpmbuild/SPECS/tidalt.spec
+COPY --from=build /out/gotidal               /root/rpmbuild/SOURCES/gotidal
+COPY cmd/gotidal/gotidal.desktop              /root/rpmbuild/SOURCES/gotidal.desktop
+COPY packaging/fedora/gotidal.spec           /root/rpmbuild/SPECS/gotidal.spec
 
 RUN RPM_ARCH=$(cat /rpm_arch) && \
     rpmbuild -bb \
         --target "${RPM_ARCH}" \
         --define "version_macro ${VERSION}" \
         --define "_build_id_links none" \
-        /root/rpmbuild/SPECS/tidalt.spec
+        /root/rpmbuild/SPECS/gotidal.spec
 
 # ── Export stage ─────────────────────────────────────────────────────────────
 FROM scratch AS artifact

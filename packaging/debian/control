@@ -1,23 +1,24 @@
-Source: tidalt
+Source: gotidal
 Section: sound
 Priority: optional
-Maintainer: Benehiko <https://github.com/Benehiko>
+Maintainer: carcuevas <https://github.com/carcuevas>
 Build-Depends: debhelper (>= 13), libasound2-dev
 Standards-Version: 4.6.2
-Homepage: https://github.com/Benehiko/tidalt
+Homepage: https://github.com/carcuevas/gotidal
 Rules-Requires-Root: no
 
-Package: tidalt
+Package: gotidal
 Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}, libasound2t64, dbus
 Recommends: playerctl
-Suggests: kdeconnect
+Suggests: kdeconnect, cava
 Description: Tidal music player for Linux — bit-perfect FLAC via ALSA
- tidalt is a Tidal music player that delivers bit-perfect, lossless audio
+ goTidal is a Tidal music player that delivers bit-perfect, lossless audio
  directly to your DAC via ALSA hw: — bypassing PipeWire and PulseAudio
  entirely. It can run as an interactive TUI, a headless daemon controlled
  via any MPRIS2 client, or a lightweight client that forwards commands to
  a running daemon over D-Bus.
  .
- Features include: FLAC playback, MPRIS2 registration, daemon mode,
- shuffle, song radio, favorites, seek, and output device selection.
+ Features include: an rmpc-style tabbed TUI, a CAVA spectrum visualizer,
+ synced lyrics, FLAC playback, MPRIS2 registration, daemon mode, shuffle,
+ song radio, favorites, seek, and output device selection.

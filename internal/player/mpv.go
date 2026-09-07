@@ -18,7 +18,7 @@ import (
 	"time"
 	"unsafe" //nolint:gocritic // dupImport false positive: cgo "C" pseudo-package aliases unsafe
 
-	"github.com/Benehiko/tidalt/v4/internal/logger"
+	"github.com/carcuevas/gotidal/internal/logger"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -153,6 +153,41 @@ type Player struct {
 	samplesPlayed uint64
 	paused        uint32 // 0 = playing, 1 = paused
 	volumeBits    uint64 // float64 stored via math.Float64bits; range 0.0–1.0
+
+	// pcmTapCh is a best-effort tee of the same packed PCM buffer written to
+	// ALSA, consumed by internal/visualizer to drive the CAVA spectrum
+	// visualizer. Allocated unconditionally in NewPlayer (not lazily) so the
+	// decode goroutine never needs to lock to read it; sends are always
+	// non-blocking (select-with-default) so a slow or absent consumer can only
+	// ever drop tap frames, never the bit-perfect write to snd_pcm_writei.
+	pcmTapCh chan []byte
+
+	// interTrackSilenceMs is the length of digital silence (in milliseconds)
+	// written between consecutive tracks. 0 (the default) preserves gapless
+	// playback exactly as before. A non-zero value trades that gap away in
+	// exchange for a real silent gap a downstream recorder's own
+	// silence-based auto-track-detection can key off — it never touches
+	// either track's own samples, so it doesn't affect bit-perfectness.
+	interTrackSilenceMs atomic.Uint32
+}
+
+// SetInterTrackSilenceMs sets how much digital silence (in milliseconds) to
+// write between consecutive tracks. 0 disables it (gapless, the default).
+func (p *Player) SetInterTrackSilenceMs(ms uint32) { p.interTrackSilenceMs.Store(ms) }
+
+// TapPCM returns a channel that receives a copy of every packed PCM buffer
+// this player writes to ALSA (post-volume, pre-write — same bytes, same
+// format). Consumers must drain it promptly: sends are non-blocking, so a slow
+// reader simply misses frames rather than backing up the audio path.
+func (p *Player) TapPCM() <-chan []byte { return p.pcmTapCh }
+
+// Format reports the current stream's sample rate and channel count (0/0
+// before any track has started). Bit depth is not included: avcodec always
+// decodes to S32LE, so it never varies.
+func (p *Player) Format() (rate uint32, channels uint8) {
+	p.muInfo.RLock()
+	defer p.muInfo.RUnlock()
+	return p.sampleRate, p.channels
 }
 
 // SetDevice sets the ALSA hw device to use for playback. Pass "" to revert to
@@ -233,6 +268,7 @@ func NewPlayer() *Player {
 		nextURLCh: make(chan string, 1),
 		pausedCh:  make(chan error, 1),
 		skipCh:    make(chan struct{}),
+		pcmTapCh:  make(chan []byte, 4),
 	}
 	atomic.StoreUint64(&p.volumeBits, math.Float64bits(1.0))
 	return p
@@ -681,6 +717,36 @@ func closeALSA(ah *alsaHandle) {
 	ah.pcm = nil
 }
 
+// writeSilence writes ms milliseconds of zero-valued PCM to ah at the given
+// rate/channels/bytesPerSample — pure digital silence, not a fade or a
+// resample of either adjacent track, so it never touches their samples.
+// Recovers from a transient xrun the same way the main write loop does;
+// gives up (logging, not erroring — a missed silence gap is cosmetic) if
+// recovery itself fails.
+func writeSilence(ah *alsaHandle, ms uint32, channels uint8, bytesPerSample int) {
+	if ms == 0 || ah == nil || ah.pcm == nil {
+		return
+	}
+	frames := int(uint64(ms) * uint64(ah.rate) / 1000)
+	if frames <= 0 {
+		return
+	}
+	buf := make([]byte, frames*int(channels)*bytesPerSample)
+	written := 0
+	for written < frames {
+		rc := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&buf[written*int(channels)*bytesPerSample]), C.snd_pcm_uframes_t(frames-written))
+		if rc < 0 {
+			if rec := C.snd_pcm_recover(ah.pcm, C.int(rc), C.int(1)); rec < 0 {
+				logger.L.Warn("writeSilence: recover failed, skipping remaining silence",
+					"err", C.GoString(C.snd_strerror(rec)))
+				return
+			}
+			continue
+		}
+		written += int(rc)
+	}
+}
+
 // playbackLoop runs the full playback lifecycle for a track (and subsequent
 // gapless transitions). Returns true if playback ended naturally (track
 // finished or transitioned), false if it aborted due to an error before any
@@ -844,6 +910,13 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					buf[off+1] = byte(s >> 8)
 					buf[off+2] = byte(s >> 16)
 					buf[off+3] = byte(s >> 24)
+				}
+				// Best-effort tee for the CAVA visualizer — copies the buffer
+				// so the visualizer goroutine can hold onto it after this one
+				// reuses/writes buf; never blocks the audio path.
+				select {
+				case p.pcmTapCh <- append([]byte(nil), buf...):
+				default:
 				}
 				select {
 				case pcmCh <- pcmBuf{data: buf, nFrames: n}:
@@ -1094,6 +1167,8 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				releaseReservation = newRel
 				bps = ah.bytesPerSample
 			}
+
+			writeSilence(ah, p.interTrackSilenceMs.Load(), channels, bps)
 
 			p.muInfo.Lock()
 			p.sampleRate = sampleRate

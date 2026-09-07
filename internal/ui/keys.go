@@ -8,8 +8,8 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Benehiko/tidalt/v4/internal/player"
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/player"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // Frequently-compared key strings, hoisted to constants (goconst).
@@ -23,13 +23,18 @@ const (
 )
 
 // handleKey is the top-level key dispatcher. Order of precedence:
-//  1. global keys (quit, command palette, theme cycle, device overlay)
-//  2. an active overlay (command palette / action sheet / device select)
-//  3. a focused search input
-//  4. sidebar navigation (when the sidebar holds focus)
-//  5. the active section's main-pane handler
+//  1. the second key of a pending two-key sequence (rmpc's g/o/Ctrl+S chains)
+//  2. global keys (quit, tab switch, command palette, help, ...)
+//  3. an active overlay
+//  4. a focused search input
+//  5. rmpc's list-navigation keys (top/bottom/half-page/page), applied
+//     uniformly across whichever list currently has the cursor
+//  6. the active tab's own handler
 func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if cmd, done := m.handleGlobalKey(&m, k); done {
+	if m.pendingKey != "" {
+		return m.handlePendingKey(k)
+	}
+	if cmd, done := m.handleGlobalKey(k); done {
 		return m, cmd
 	}
 
@@ -52,15 +57,15 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if !m.focusMain {
-		return m.updateSidebar(k)
+	if cmd, handled := m.handleGenericNav(k); handled {
+		return m, cmd
 	}
 	return m.updateSection(k)
 }
 
-// handleGlobalKey handles keys that work regardless of section/overlay. It
+// handleGlobalKey handles keys that work regardless of tab/overlay. It
 // returns (cmd, true) when it consumed the key. It mutates through the pointer.
-func (m *Model) handleGlobalKey(_ *Model, k tea.KeyMsg) (tea.Cmd, bool) {
+func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	switch k.String() {
 	case "ctrl+c":
 		return m.quit(), true
@@ -81,6 +86,13 @@ func (m *Model) handleGlobalKey(_ *Model, k tea.KeyMsg) (tea.Cmd, bool) {
 		m.openCommandPalette()
 		return nil, true
 
+	case "?":
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
+			return nil, false
+		}
+		m.overlay = OverlayHelp
+		return nil, true
+
 	case "t":
 		if m.searchInput.Focused() || m.section == SecSettings {
 			return nil, false // Settings owns "t"; input treats it as text
@@ -88,14 +100,152 @@ func (m *Model) handleGlobalKey(_ *Model, k tea.KeyMsg) (tea.Cmd, bool) {
 		m.cycleTheme()
 		return nil, true
 
-	case "d":
-		if m.searchInput.Focused() || m.overlay != OverlayNone || m.section == SecSearch {
+	case "ctrl+x":
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
 			return nil, false
 		}
-		m.openDeviceSelect()
+		if t := m.selectedTrack(); t != nil {
+			m.openActionSheet(*t)
+		}
+		return nil, true
+
+	case "tab":
+		// Deliberately not guarded by searchInput.Focused(): a literal tab
+		// character has no legitimate use in a search query, so Tab always
+		// switches tabs immediately rather than waiting for Esc first.
+		if m.overlay != OverlayNone {
+			return nil, false
+		}
+		return m.cycleTab(1), true
+	case "shift+tab":
+		if m.overlay != OverlayNone {
+			return nil, false
+		}
+		return m.cycleTab(-1), true
+
+	case "g", "o", "ctrl+s":
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
+			return nil, false
+		}
+		m.pendingKey = k.String()
+		return nil, true
+
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
+			return nil, false
+		}
+		n, _ := strconv.Atoi(k.String())
+		if n >= 1 && n <= len(tabEntries) {
+			return m.gotoTab(tabEntries[n-1].section), true
+		}
 		return nil, true
 	}
 	return nil, false
+}
+
+// handlePendingKey resolves the second key of a two-key sequence started by
+// handleGlobalKey (rmpc's g/o/Ctrl+S prefix chains). An unrecognized second
+// key silently cancels the sequence, matching rmpc's own behavior.
+func (m Model) handlePendingKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	prefix := m.pendingKey
+	m.pendingKey = ""
+	key := k.String()
+
+	switch prefix {
+	case "g":
+		switch key {
+		case "g":
+			if cur, _ := m.activeCursorRef(); cur != nil {
+				*cur = 0
+			}
+			cmd := m.syncQueueCover()
+			return m, cmd
+		case "t":
+			cmd := m.cycleTab(1)
+			return m, cmd
+		case "T":
+			cmd := m.cycleTab(-1)
+			return m, cmd
+		}
+	case "o":
+		switch key {
+		case "I":
+			m.openSongInfo()
+			return m, nil
+		case "o":
+			m.openDeviceSelect()
+			return m, nil
+		}
+	case "ctrl+s":
+		if key == "a" {
+			return m.saveQueueAsNew()
+		}
+	}
+	return m, nil
+}
+
+// activeCursorRef returns a pointer to whichever cursor field indexes the
+// list currently on screen, and that list's length — the single source of
+// truth handleGenericNav (gg/G/half-page/page) and gg use to work uniformly
+// across every tab. Returns (nil, 0) for contexts with no single linear
+// cursor (overlays, the Settings theme picker), so callers fall through to
+// that context's own key handler instead.
+func (m *Model) activeCursorRef() (cur *int, length int) {
+	switch {
+	case m.overlay != OverlayNone:
+		return nil, 0
+	case m.showArtist && m.artistAlbum != nil:
+		return &m.artistAlbumCursor, len(m.artistAlbumTracks)
+	case m.showArtist:
+		return &m.artistCursor, len(m.artistAlbums) + 2
+	case m.section == SecSearch:
+		return &m.searchCursor, len(m.searchRows())
+	case m.section == SecPlaylists && m.detailFocus:
+		return &m.detailCursor, len(m.detailTracks)
+	case m.section == SecPlaylists:
+		return &m.cursor, len(m.playlists)
+	case m.section == SecFavSongs:
+		return &m.cursor, len(m.favSongs)
+	case m.section == SecFavArtists:
+		return &m.cursor, len(m.favArtists)
+	case m.section == SecFavAlbums:
+		return &m.cursor, len(m.favAlbums)
+	case m.section == SecHistory:
+		return &m.cursor, len(m.history)
+	case m.section == SecSettings:
+		return nil, 0
+	default: // Queue, Mixes
+		return &m.cursor, m.currentListLen()
+	}
+}
+
+// handleGenericNav applies rmpc's list-navigation keys (bottom, half-page,
+// full-page) uniformly via activeCursorRef. "gg" (top) is handled directly in
+// handlePendingKey since it arrives as a two-key sequence. Returns
+// handled=false for any other key, or when the current context has no single
+// linear cursor, so the caller falls through to the tab's own handler.
+func (m *Model) handleGenericNav(k tea.KeyMsg) (tea.Cmd, bool) {
+	cur, length := m.activeCursorRef()
+	if cur == nil {
+		return nil, false
+	}
+	page := max(m.bodyHeight(), 2)
+	top := max(length-1, 0)
+	switch k.String() {
+	case "G":
+		*cur = top
+	case "ctrl+u":
+		*cur = max(*cur-page/2, 0)
+	case "ctrl+d":
+		*cur = min(*cur+page/2, top)
+	case "ctrl+b", "pgup":
+		*cur = max(*cur-page, 0)
+	case "ctrl+f", "pgdown":
+		*cur = min(*cur+page, top)
+	default:
+		return nil, false
+	}
+	return m.syncQueueCover(), true
 }
 
 func (m *Model) quit() tea.Cmd {
@@ -104,6 +254,9 @@ func (m *Model) quit() tea.Cmd {
 	}
 	if m.player != nil {
 		m.player.Close()
+	}
+	if m.cava != nil {
+		m.cava.Stop()
 	}
 	m.store.Close()
 	return tea.Quit
@@ -125,6 +278,15 @@ func (m *Model) openDeviceSelect() {
 			break
 		}
 	}
+}
+
+// openSongInfo raises the current-song-info overlay (rmpc's oI /
+// ShowCurrentSongInfo).
+func (m *Model) openSongInfo() {
+	if m.currentTrack == nil {
+		return
+	}
+	m.overlay = OverlaySongInfo
 }
 
 // cycleTheme advances to the next palette in paletteOrder and commits it.
@@ -158,32 +320,28 @@ func (m *Model) rebuildProgress() {
 	m.progress = progressWithTheme(t, barWidth)
 }
 
-// updateSidebar handles navigation while the sidebar holds focus.
-func (m Model) updateSidebar(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch k.String() {
-	case keyUp, "k":
-		if m.sidebarCursor > 0 {
-			m.sidebarCursor--
-		}
-	case keyDown, "j":
-		if m.sidebarCursor < len(navSections)-1 {
-			m.sidebarCursor++
-		}
-	case keyEnter, "l", keyRight, " ":
-		return m.selectSection(navSections[m.sidebarCursor])
-	case "/":
-		return m.selectSection(SecSearch)
-	}
-	return m, nil
+// gotoTab switches to sec via the same path selectSection has always used
+// (data loads, focus, cursor reset), adapted for a pointer-receiver caller.
+func (m *Model) gotoTab(sec Section) tea.Cmd {
+	next, cmd := m.selectSection(sec)
+	*m = next.(Model) //nolint:forcetypeassert // selectSection always returns the concrete Model it was called on
+	return cmd
 }
 
-// selectSection switches to a section, moves focus to the main pane, and fires
-// any data-load command the section needs.
+// cycleTab moves to the next (delta=1) or previous (delta=-1) tab in
+// tabEntries order, wrapping around.
+func (m *Model) cycleTab(delta int) tea.Cmd {
+	n := len(tabEntries)
+	i := ((tabIndexOf(m.section)+delta)%n + n) % n
+	return m.gotoTab(tabEntries[i].section)
+}
+
+// selectSection switches to a tab, resets its cursor, and fires any
+// data-load command it needs.
 func (m Model) selectSection(sec Section) (tea.Model, tea.Cmd) {
 	m.section = sec
 	m.showArtist = false
 	m.focusMain = true
-	m.sidebarCursor = navIndexOf(sec)
 	m.cursor = 0
 	if sec == SecPlaylists {
 		m.detailFocus = false
@@ -202,9 +360,9 @@ func (m Model) selectSection(sec Section) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, m.syncQueueCover())
 }
 
-// loadSection returns the command to (re)load a section's data, or nil when the
-// section reuses already-loaded data. Favorites/playlists loaders arrive in
-// later steps; for now only the always-available sections are wired.
+// loadSection returns the command to (re)load a tab's data, or nil when the
+// tab reuses already-loaded data. Favorites/playlists loaders arrive in later
+// steps; for now only the always-available tabs are wired.
 func (m *Model) loadSection(sec Section) tea.Cmd {
 	switch sec {
 	case SecMixes:
@@ -257,9 +415,9 @@ func (m *Model) loadSection(sec Section) tea.Cmd {
 	}
 }
 
-// updateSection routes keys to the active section's handler.
+// updateSection routes keys to the active tab's handler. Esc backs out one
+// level: album → artist albums → close artist → playlist detail.
 func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc backs out one level: album → artist albums → close artist → sidebar.
 	if k.String() == keyEsc {
 		switch {
 		case m.showArtist && m.artistAlbum != nil:
@@ -270,8 +428,6 @@ func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showArtist = false
 		case m.section == SecPlaylists && m.detailFocus:
 			m.detailFocus = false
-		default:
-			m.focusMain = false
 		}
 		return m, nil
 	}
@@ -297,16 +453,13 @@ func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSettings(k)
 	default:
 		// Queue, Now Playing, Mixes.
-		if k.String() == "h" || (k.String() == keyLeft && m.currentTrack == nil) {
-			m.focusMain = false
-			return m, nil
-		}
 		return m.updateListKeys(k)
 	}
 }
 
-// updateListKeys handles the common track-list sections (Queue, Favorites songs,
-// Now Playing): cursor movement, playback, and track actions.
+// updateListKeys handles the common track-list tabs (Queue, Now Playing,
+// Mixes): cursor movement, playback, and queue-only actions (rmpc scopes
+// Delete/DeleteAll/MoveUp/MoveDown to the queue).
 func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case keyUp, "k":
@@ -322,18 +475,28 @@ func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.syncQueueCover()
 		return m, cmd
-	case "x":
+	case "d":
 		if m.section == SecQueue {
 			m.removeFromQueue(m.cursor)
 			cmd := m.syncQueueCover()
 			return m, cmd
 		}
 		return m, nil
-	case "C":
+	case "D":
 		if m.section == SecQueue {
 			m.clearQueue()
 			cmd := m.syncQueueCover()
 			return m, cmd
+		}
+		return m, nil
+	case "K":
+		if m.section == SecQueue {
+			m.moveQueueItem(m.cursor, -1)
+		}
+		return m, nil
+	case "J":
+		if m.section == SecQueue {
+			m.moveQueueItem(m.cursor, 1)
 		}
 		return m, nil
 	case keyEnter:
@@ -357,59 +520,63 @@ func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.commonKeys(k)
 }
 
-// commonKeys handles keys shared by every main-pane context (playback transport,
-// volume, shuffle, track actions). Returns the model unchanged for unknown keys.
+// commonKeys handles keys shared by every tab (playback transport, volume,
+// shuffle, queueing). Returns the model unchanged for unknown keys.
 func (m Model) commonKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
-	case " ":
+	case "p":
 		return m.togglePlay()
-	case keyLeft:
-		if !m.clientMode && m.player != nil && m.currentTrack != nil {
-			if err := m.player.Seek(m.currPos - 10); err != nil {
-				m.errText = err.Error()
-			}
-		}
-	case keyRight:
-		if !m.clientMode && m.player != nil && m.currentTrack != nil {
-			if err := m.player.Seek(m.currPos + 10); err != nil {
-				m.errText = err.Error()
-			}
-		}
-	case "9":
-		m.setVolume(m.volume - 5)
-	case "0":
-		m.setVolume(m.volume + 5)
 	case "s":
+		return m.stopPlayback()
+	case "f":
+		m.seekBy(10)
+	case "b":
+		m.seekBy(-10)
+	case ".":
+		m.setVolume(m.volume + 5)
+	case ",":
+		m.setVolume(m.volume - 5)
+	case "x":
 		m.cycleShuffle()
-	case "S":
-		return m.saveQueueAsNew()
-	case ">", ".":
+	case "X":
+		if m.section == SecQueue {
+			m.reshuffleQueue()
+		}
+	case ">":
 		return m.skipNext()
-	case "<", ",":
+	case "<":
 		return m.skipPrev()
-	case "o":
+	case "a":
 		if t := m.selectedTrack(); t != nil {
-			m.openActionSheet(*t)
+			m.enqueueEnd(*t)
+		}
+	case "A":
+		m.enqueueAllVisible()
+	case "F":
+		if t := m.selectedTrack(); t != nil {
+			cmd := m.toggleFavorite(*t)
+			return m, cmd
 		}
 	case "r":
 		if t := m.selectedTrack(); t != nil {
 			cmd := m.radioFrom(*t)
 			return m, cmd
 		}
-	case "f":
-		if t := m.selectedTrack(); t != nil {
-			cmd := m.toggleFavorite(*t)
-			return m, cmd
-		}
-	case "a":
-		return m.openArtistFor(m.selectedTrack())
-	case "c":
+	case "y":
 		return m.copyLink()
 	}
 	return m, nil
 }
 
 // --- shared action helpers ---
+
+func (m *Model) seekBy(delta float64) {
+	if !m.clientMode && m.player != nil && m.currentTrack != nil {
+		if err := m.player.Seek(m.currPos + delta); err != nil {
+			m.errText = err.Error()
+		}
+	}
+}
 
 func (m *Model) setVolume(v float64) {
 	if m.clientMode {
@@ -420,17 +587,63 @@ func (m *Model) setVolume(v float64) {
 	_ = m.store.SaveVolume(m.volume)
 }
 
+// interTrackSilenceDefaultMs is the gap length the palette toggle applies —
+// long enough for a CD/DAT recorder's own silence-based auto-track-detection
+// to reliably key off, short enough not to be intrusive when listening live.
+const interTrackSilenceDefaultMs = 2000
+
+// toggleInterTrackSilence flips the inter-track silence gap between off
+// (gapless, the default) and interTrackSilenceDefaultMs — a niche,
+// off-by-default setting for feeding a downstream recorder's own
+// silence-based auto-track-detection; see Player.SetInterTrackSilenceMs.
+func (m Model) toggleInterTrackSilence() (tea.Model, tea.Cmd) {
+	if m.clientMode {
+		m.errText = "Not available in client mode — the daemon owns the player"
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+	if m.interTrackSilenceMs == 0 {
+		m.interTrackSilenceMs = interTrackSilenceDefaultMs
+		m.toast = fmt.Sprintf("CD-recorder silence gap: ON (%.1fs) — gapless playback is now off", float64(interTrackSilenceDefaultMs)/1000)
+	} else {
+		m.interTrackSilenceMs = 0
+		m.toast = "CD-recorder silence gap: OFF (gapless)"
+	}
+	m.player.SetInterTrackSilenceMs(m.interTrackSilenceMs)
+	_ = m.store.SaveInterTrackSilenceMs(m.interTrackSilenceMs)
+	return m, toastClearCmd()
+}
+
 func (m *Model) cycleShuffle() {
-	switch m.shuffleMode {
-	case ShuffleOff:
+	if m.shuffleMode == ShuffleOff {
 		m.shuffleMode = ShuffleFisherYates
-	case ShuffleFisherYates:
-		m.shuffleMode = ShuffleRandom
-	default:
+	} else {
 		m.shuffleMode = ShuffleOff
 	}
 	m.applyShuffle()
 	m.cursor = 0
+}
+
+// enqueueAllVisible appends every track in the tab's current list to the
+// queue (rmpc's AddAll), matching whichever list selectedTrack() reads from.
+func (m *Model) enqueueAllVisible() {
+	var list []tidal.Track
+	switch {
+	case m.section == SecSearch:
+		list = m.searchResults.Tracks
+	case m.section == SecFavSongs:
+		list = m.favSongs
+	case m.section == SecHistory:
+		list = m.history
+	case m.section == SecPlaylists && m.detailFocus:
+		list = m.detailTracks
+	case m.showArtist && m.artistAlbum != nil:
+		list = m.artistAlbumTracks
+	default:
+		list = m.tracks
+	}
+	for i := range list {
+		m.enqueueEnd(list[i])
+	}
 }
 
 func (m Model) togglePlay() (tea.Model, tea.Cmd) {
@@ -461,6 +674,22 @@ func (m Model) togglePlay() (tea.Model, tea.Cmd) {
 	if m.isPlaying {
 		return m, tea.Batch(m.ensureBarsTicking()...)
 	}
+	return m, nil
+}
+
+// stopPlayback implements rmpc's Stop (distinct from Pause, which the player
+// has no separate state for): pause and rewind to the beginning.
+func (m Model) stopPlayback() (tea.Model, tea.Cmd) {
+	if m.clientMode || m.player == nil || m.currentTrack == nil {
+		return m, nil
+	}
+	if !m.player.IsPaused() {
+		_ = m.player.Pause()
+	}
+	_ = m.player.Seek(0)
+	m.isPlaying = false
+	m.currPos = 0
+	m.pushState()
 	return m, nil
 }
 
@@ -669,7 +898,6 @@ func (m Model) updateArtistAlbum(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showArtist = false
 		m.artistAlbum = nil
 		m.section = SecQueue
-		m.sidebarCursor = navIndexOf(SecQueue)
 		cmd := m.playListIntoQueue(tracks, i)
 		return m, cmd
 	}
@@ -703,8 +931,9 @@ func (m *Model) selectedTrack() *tidal.Track {
 	}
 }
 
-// currentListLen returns the length of the list the main cursor indexes for the
-// active section.
+// currentListLen returns the length of the list the main cursor indexes for
+// the active tab (Queue/Mixes only — other tabs have their own cursor and
+// track their own list length directly).
 func (m *Model) currentListLen() int {
 	switch m.section {
 	case SecMixes:

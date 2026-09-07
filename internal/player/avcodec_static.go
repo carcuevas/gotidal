@@ -3,7 +3,7 @@
 package player
 
 // staticav build: link a self-contained, minimal FFmpeg built from source
-// under /tmp/tidalt-ffmpeg-static (see the packaging Dockerfiles). The
+// under /tmp/gotidal-ffmpeg-static (see the packaging Dockerfiles). The
 // decoders/demuxers are statically linked into the binary, so the resulting
 // executable carries no dynamic dependency on the host's FFmpeg .so files and
 // is portable across distributions regardless of their FFmpeg version.
@@ -13,6 +13,6 @@ package player
 // be present in the build image. Order matters: avformat depends on avcodec,
 // which depends on swresample and avutil.
 
-// #cgo CFLAGS: -I/tmp/tidalt-ffmpeg-static/include
-// #cgo LDFLAGS: /tmp/tidalt-ffmpeg-static/lib/libavformat.a /tmp/tidalt-ffmpeg-static/lib/libavcodec.a /tmp/tidalt-ffmpeg-static/lib/libswresample.a /tmp/tidalt-ffmpeg-static/lib/libavutil.a -lm -lpthread -latomic
+// #cgo CFLAGS: -I/tmp/gotidal-ffmpeg-static/include
+// #cgo LDFLAGS: /tmp/gotidal-ffmpeg-static/lib/libavformat.a /tmp/gotidal-ffmpeg-static/lib/libavcodec.a /tmp/gotidal-ffmpeg-static/lib/libswresample.a /tmp/gotidal-ffmpeg-static/lib/libavutil.a -lm -lpthread -latomic
 import "C"

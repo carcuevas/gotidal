@@ -599,6 +599,12 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// A 404 here means Tidal has no mix recommendations for this account
+	// right now (not every account/session has one) — that's normal, empty
+	// data, not a failure worth surfacing as an error toast.
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get mixes", resp.StatusCode, body)

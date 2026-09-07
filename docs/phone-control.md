@@ -1,7 +1,7 @@
-# Controlling tidalt from your phone
+# Controlling gotidal from your phone
 
 MPRIS2 is a local D-Bus protocol — it does not have a network transport. To
-control tidalt from a phone on the same LAN you need a bridge application that
+control gotidal from a phone on the same LAN you need a bridge application that
 speaks MPRIS2 on the desktop side and a custom protocol (over Wi-Fi or
 Bluetooth) on the phone side.
 
@@ -17,7 +17,7 @@ difference is the desktop side.
 
 ---
 
-## How it works with tidalt
+## How it works with gotidal
 
 ```
 Phone (KDE Connect app)
@@ -26,16 +26,16 @@ Phone (KDE Connect app)
 Desktop bridge (kdeconnectd / GSConnect)
   │  D-Bus session bus (MPRIS2)
   ▼
-tidalt (org.mpris.MediaPlayer2.tidalt)
+gotidal (org.mpris.MediaPlayer2.gotidal)
   │
   ▼
 ALSA hw: → DAC → speakers
 ```
 
 The bridge daemon watches the D-Bus session bus for registered MPRIS2 players.
-When it sees `org.mpris.MediaPlayer2.tidalt` it exposes tidalt's controls
+When it sees `org.mpris.MediaPlayer2.gotidal` it exposes gotidal's controls
 (play, pause, next, previous, current track title/artist) in the phone app's
-media widget. No tidalt-specific configuration is needed — it is discovered
+media widget. No gotidal-specific configuration is needed — it is discovered
 automatically via MPRIS2.
 
 ---
@@ -78,7 +78,7 @@ systemctl --user enable --now kdeconnect.service
 
 ### Verify MPRIS2 bridge
 
-With tidalt running and the device paired, check that the bridge is active:
+With gotidal running and the device paired, check that the bridge is active:
 
 ```bash
 kdeconnect-cli --list-devices --id-only | xargs -I{} kdeconnect-cli -d {} --list-available-plugins
@@ -95,15 +95,15 @@ widget — it will show the current track and play/pause/next/previous buttons.
 # List paired devices and their IDs
 kdeconnect-cli --list-devices
 
-# Check if tidalt is visible as an MPRIS player
+# Check if gotidal is visible as an MPRIS player
 kdeconnect-cli -d <deviceID> --list-available-plugins
 
 # Manually send a command (useful for testing without the phone)
 kdeconnect-cli -d <deviceID> --action play-pause
 ```
 
-If tidalt does not appear in the phone's media widget:
-1. Confirm tidalt is running and registered: `playerctl --list-all` should show `tidalt`.
+If gotidal does not appear in the phone's media widget:
+1. Confirm gotidal is running and registered: `playerctl --list-all` should show `gotidal`.
 2. Restart `kdeconnectd`: `systemctl --user restart kdeconnect.service`.
 3. On the phone, close and reopen the KDE Connect app.
 
@@ -143,7 +143,7 @@ GSConnect shows a desktop notification to accept.
 ### MPRIS2 bridge
 
 GSConnect's MPRIS plugin works the same way as KDE Connect's. Once paired the
-phone app's media widget will show tidalt controls automatically when tidalt is
+phone app's media widget will show gotidal controls automatically when gotidal is
 running.
 
 ---
@@ -153,8 +153,8 @@ running.
 The recommended setup for always-on phone control:
 
 ```bash
-# 1. Install tidalt as a background daemon
-tidalt setup --daemon
+# 1. Install gotidal as a background daemon
+gotidal setup --daemon
 
 # 2. Install and start KDE Connect (or GSConnect)
 systemctl --user enable --now kdeconnect.service
@@ -162,9 +162,9 @@ systemctl --user enable --now kdeconnect.service
 # 3. Pair your phone once
 ```
 
-After this, tidalt starts at login with no terminal window. Open the KDE
+After this, gotidal starts at login with no terminal window. Open the KDE
 Connect app on your phone any time to browse, play, pause, and skip tracks.
-To load a specific playlist or search for tracks, run `tidalt` in any terminal
+To load a specific playlist or search for tracks, run `gotidal` in any terminal
 — it opens in client mode and forwards commands to the daemon.
 
 ---
@@ -181,7 +181,7 @@ Through the KDE Connect / GSConnect MPRIS bridge:
 | See current track title & artist | Yes (via MPRIS2 `Metadata`) |
 | Volume | No ¹ |
 | Seek | No ² |
-| Browse / search | No (use the `tidalt` TUI) |
+| Browse / search | No (use the `gotidal` TUI) |
 
 > ¹ Volume control via MPRIS2 `Volume` property is not yet implemented.
 >

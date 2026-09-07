@@ -1,10 +1,14 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: tidalt
-Upstream-Contact: https://github.com/Benehiko/tidalt
-Source: https://github.com/Benehiko/tidalt
+Upstream-Name: gotidal
+Upstream-Contact: https://github.com/carcuevas/gotidal
+Source: https://github.com/carcuevas/gotidal
+
+Comment: gotidal is a fork of tidalt (https://github.com/Benehiko/tidalt),
+ renamed and extended; see NOTICE at the top of the source tree.
 
 Files: *
-Copyright: Benehiko <https://github.com/Benehiko>
+Copyright: Benehiko <https://github.com/Benehiko> (original tidalt)
+ carcuevas <https://github.com/carcuevas> (gotidal fork and modifications)
 License: Apache-2.0
 
 License: Apache-2.0

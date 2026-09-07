@@ -1,20 +1,20 @@
-# Running tidalt in Docker
+# Running gotidal in Docker
 
-The official image is published to Docker Hub at `benehiko/tidalt` and is built
+The official image is published to Docker Hub at `carcuevas/gotidal` and is built
 for `linux/amd64` and `linux/arm64`.
 
 ---
 
 ## Audio devices
 
-tidalt opens ALSA `hw:` devices directly. Two things are needed to make that work
+gotidal opens ALSA `hw:` devices directly. Two things are needed to make that work
 inside a container:
 
 ### 1. Expose `/dev/snd`
 
 Pass `--device /dev/snd` to give the container access to all ALSA PCM and control
 nodes. This also makes `/proc/asound` readable inside the container, which is how
-tidalt discovers available cards.
+gotidal discovers available cards.
 
 ### 2. Join the `audio` group
 
@@ -36,33 +36,33 @@ The same output is visible inside a running container — no extra flags needed,
 `/proc` is already mounted:
 
 ```bash
-docker run --rm --device /dev/snd benehiko/tidalt:latest cat /proc/asound/cards
+docker run --rm --device /dev/snd carcuevas/gotidal:latest cat /proc/asound/cards
 ```
 
 ---
 
 ## Persistent data
 
-tidalt writes two kinds of data that should survive container restarts:
+gotidal writes two kinds of data that should survive container restarts:
 
 | Path in container              | Contents                                    |
 | ------------------------------ | ------------------------------------------- |
-| `/root/.config/tidalt/`        | OAuth2 session (age-encrypted fallback)     |
-| `/root/.local/share/tidalt/`   | Volume, device preference, metadata cache   |
+| `/root/.config/gotidal/`        | OAuth2 session (age-encrypted fallback)     |
+| `/root/.local/share/gotidal/`   | Volume, device preference, metadata cache   |
 
 Mount them from the host:
 
 ```
--v ~/.config/tidalt:/root/.config/tidalt
--v ~/.local/share/tidalt:/root/.local/share/tidalt
+-v ~/.config/gotidal:/root/.config/gotidal
+-v ~/.local/share/gotidal:/root/.local/share/gotidal
 ```
 
 ---
 
 ## D-Bus (WirePlumber / PipeWire)
 
-Before opening a `hw:` device, tidalt asks WirePlumber to release it via D-Bus.
-If D-Bus is unreachable the reservation is silently skipped and tidalt opens the
+Before opening a `hw:` device, gotidal asks WirePlumber to release it via D-Bus.
+If D-Bus is unreachable the reservation is silently skipped and gotidal opens the
 device directly — this is fine on most setups. If you run PipeWire and want tidy
 hand-off, forward the session bus socket:
 
@@ -81,28 +81,28 @@ hand-off, forward the session bus socket:
 docker run -it --rm \
   --device /dev/snd \
   --group-add $(getent group audio | cut -d: -f3) \
-  -v ~/.config/tidalt:/root/.config/tidalt \
-  -v ~/.local/share/tidalt:/root/.local/share/tidalt \
-  benehiko/tidalt:latest
+  -v ~/.config/gotidal:/root/.config/gotidal \
+  -v ~/.local/share/gotidal:/root/.local/share/gotidal \
+  carcuevas/gotidal:latest
 ```
 
 ### Headless daemon
 
 ```bash
 docker run -d \
-  --name tidalt \
+  --name gotidal \
   --restart unless-stopped \
   --device /dev/snd \
   --group-add $(getent group audio | cut -d: -f3) \
-  -v ~/.config/tidalt:/root/.config/tidalt \
-  -v ~/.local/share/tidalt:/root/.local/share/tidalt \
-  benehiko/tidalt:latest daemon
+  -v ~/.config/gotidal:/root/.config/gotidal \
+  -v ~/.local/share/gotidal:/root/.local/share/gotidal \
+  carcuevas/gotidal:latest daemon
 ```
 
 Then attach the TUI from any terminal on the host:
 
 ```bash
-tidalt  # connects to the running daemon over D-Bus
+gotidal  # connects to the running daemon over D-Bus
 ```
 
 Or control playback with `playerctl` — see [mpris2.md](mpris2.md).
@@ -111,32 +111,32 @@ Or control playback with `playerctl` — see [mpris2.md](mpris2.md).
 
 ```bash
 docker run -d \
-  --name tidalt \
+  --name gotidal \
   --restart unless-stopped \
   --device /dev/snd \
   --group-add $(getent group audio | cut -d: -f3) \
-  -v ~/.config/tidalt:/root/.config/tidalt \
-  -v ~/.local/share/tidalt:/root/.local/share/tidalt \
+  -v ~/.config/gotidal:/root/.config/gotidal \
+  -v ~/.local/share/gotidal:/root/.local/share/gotidal \
   -v /run/user/$(id -u)/bus:/run/user/1000/bus \
   -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-  benehiko/tidalt:latest daemon
+  carcuevas/gotidal:latest daemon
 ```
 
 ---
 
 ## Debug logging
 
-Pass `TIDALT_DEBUG=true` to write a timestamped log to
-`/root/.local/share/tidalt/debug-*.log`:
+Pass `GOTIDAL_DEBUG=true` to write a timestamped log to
+`/root/.local/share/gotidal/debug-*.log`:
 
 ```bash
 docker run -it --rm \
   --device /dev/snd \
   --group-add $(getent group audio | cut -d: -f3) \
-  -v ~/.config/tidalt:/root/.config/tidalt \
-  -v ~/.local/share/tidalt:/root/.local/share/tidalt \
-  -e TIDALT_DEBUG=true \
-  benehiko/tidalt:latest
+  -v ~/.config/gotidal:/root/.config/gotidal \
+  -v ~/.local/share/gotidal:/root/.local/share/gotidal \
+  -e GOTIDAL_DEBUG=true \
+  carcuevas/gotidal:latest
 ```
 
 See [debugging.md](debugging.md) for more detail.

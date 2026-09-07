@@ -20,11 +20,11 @@ COPY --chown=builder:builder . /src
 
 RUN cd /home/builder && \
     # Create a source tarball from the repo so makepkg can use it.
-    tar -czf tidalt-${VERSION}.tar.gz -C /src --transform "s,^,tidalt-${VERSION}/," . && \
-    chown builder:builder tidalt-${VERSION}.tar.gz && \
+    tar -czf gotidal-${VERSION}.tar.gz -C /src --transform "s,^,gotidal-${VERSION}/," . && \
+    chown builder:builder gotidal-${VERSION}.tar.gz && \
     # Patch PKGBUILD to use the local tarball and set correct checksums.
     sed -i \
-        -e "s|^source=.*|source=(\"tidalt-\${pkgver}.tar.gz\")|" \
+        -e "s|^source=.*|source=(\"gotidal-\${pkgver}.tar.gz\")|" \
         -e "s|^b2sums=.*|b2sums=('SKIP')|" \
         PKGBUILD && \
     sudo -u builder makepkg --noconfirm

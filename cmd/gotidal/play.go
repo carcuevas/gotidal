@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Benehiko/tidalt/v4/internal/mpris"
+	"github.com/carcuevas/gotidal/internal/mpris"
 )
 
-// playLog returns a logger that writes to ~/.local/share/tidalt/play.log.
+// playLog returns a logger that writes to ~/.local/share/gotidal/play.log.
 // Errors opening the file fall back to stderr.
 func playLog() *log.Logger {
 	dir := filepath.Join(func() string {
@@ -22,9 +22,9 @@ func playLog() *log.Logger {
 			return "."
 		}
 		return h
-	}(), ".local", "share", "tidalt")
+	}(), ".local", "share", "gotidal")
 	_ = os.MkdirAll(dir, 0o700)
-	//nolint:gosec // G304: fixed "play.log" filename under the user's own ~/.local/share/tidalt dir, not attacker-controlled
+	//nolint:gosec // G304: fixed "play.log" filename under the user's own ~/.local/share/gotidal dir, not attacker-controlled
 	f, err := os.OpenFile(filepath.Join(dir, "play.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return log.New(os.Stderr, "", 0)
@@ -32,20 +32,20 @@ func playLog() *log.Logger {
 	return log.New(f, "", 0)
 }
 
-// runPlay handles the "tidalt play <url>" subcommand.
+// runPlay handles the "gotidal play <url>" subcommand.
 //
-// If a parent tidalt instance is already running, the URL is forwarded over
+// If a parent gotidal instance is already running, the URL is forwarded over
 // D-Bus and the process exits immediately — no terminal needed.
 //
-// Otherwise a terminal emulator is launched with "tidalt <url>" so the full
+// Otherwise a terminal emulator is launched with "gotidal <url>" so the full
 // TUI starts in a proper TTY with the URL queued for auto-play.
 func runPlay(url string) error {
 	lg := playLog()
-	lg.Printf("[%s] tidalt play invoked with url=%q", time.Now().Format(time.RFC3339), url)
+	lg.Printf("[%s] gotidal play invoked with url=%q", time.Now().Format(time.RFC3339), url)
 
 	if url == "" {
 		lg.Printf("error: no URL provided")
-		return errors.New("usage: tidalt play <tidal://... or https://tidal.com/...>")
+		return errors.New("usage: gotidal play <tidal://... or https://tidal.com/...>")
 	}
 
 	// If a parent is already running just push the URL and exit.
@@ -94,7 +94,7 @@ func runPlay(url string) error {
 }
 
 // findTerminal returns the terminal binary and argument list needed to run
-// "tidalt <url>" in a new window. Returns ("", nil) if nothing is found.
+// "gotidal <url>" in a new window. Returns ("", nil) if nothing is found.
 //
 // Lookup order:
 //  1. $TERMINAL env var (assumed to accept "-e <cmd> [args...]")

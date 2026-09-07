@@ -2,16 +2,16 @@
 
 ## Enabling debug logs
 
-Set the `TIDALT_DEBUG` environment variable to `true` before launching:
+Set the `GOTIDAL_DEBUG` environment variable to `true` before launching:
 
 ```bash
-TIDALT_DEBUG=true tidalt
+GOTIDAL_DEBUG=true gotidal
 ```
 
 A timestamped log file is written to:
 
 ```
-~/.local/share/tidalt/debug-YYYYMMDD-HHMMSS.log
+~/.local/share/gotidal/debug-YYYYMMDD-HHMMSS.log
 ```
 
 Each run creates a new file. Old files are not automatically removed.
@@ -30,13 +30,13 @@ Each run creates a new file. Old files are not automatically removed.
 
 ```bash
 # Follow the most recent log in real time
-tail -f ~/.local/share/tidalt/debug-*.log
+tail -f ~/.local/share/gotidal/debug-*.log
 
 # Show only API-related lines
-grep 'msg="HTTP' ~/.local/share/tidalt/debug-*.log
+grep 'msg="HTTP' ~/.local/share/gotidal/debug-*.log
 
 # Show ALSA open parameters
-grep 'msg="ALSA opened"' ~/.local/share/tidalt/debug-*.log
+grep 'msg="ALSA opened"' ~/.local/share/gotidal/debug-*.log
 ```
 
 ## Token redaction
@@ -64,8 +64,8 @@ https://lgf.audio.tidal.com/mediatracks/CAEaKw.../0.flac
 The session's `CountryCode` field is empty. Re-authenticate to refresh the session:
 
 ```bash
-rm -f ~/.config/tidalt/secrets
-tidalt
+rm -f ~/.config/gotidal/secrets
+gotidal
 ```
 
 ### `Track [ID] not found`
@@ -75,7 +75,7 @@ app skips unavailable tracks automatically when loading a Daily Mix.
 
 ### `failed to open bolt db: timeout`
 
-Another instance of `tidalt` is already running and holds the database lock.
+Another instance of `gotidal` is already running and holds the database lock.
 Quit the other instance first.
 
 ### Audio distortion on first playback

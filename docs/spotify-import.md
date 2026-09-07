@@ -1,6 +1,6 @@
 # Importing from Spotify
 
-tidalt can take a Spotify **track** or **playlist** URL, find each song on Tidal,
+gotidal can take a Spotify **track** or **playlist** URL, find each song on Tidal,
 and either build a Tidal playlist from the matches or load them straight into the
 queue. Songs that can't be found on Tidal are listed with a **not available**
 tag so you can see exactly what didn't carry over.
@@ -17,7 +17,7 @@ No Spotify account, login, or developer credentials are required.
    - `spotify:track:<id>` / `spotify:playlist:<id>`
    - Locale-prefixed web links (e.g. `.../intl-de/track/<id>`) and `?si=…`
      tracking query strings are handled.
-4. tidalt resolves the Spotify source and searches Tidal for each track. The
+4. gotidal resolves the Spotify source and searches Tidal for each track. The
    **review** screen shows every source track:
    - `✓` — matched, with the Tidal track title.
    - `✕ … not available` — no Tidal match was found.
@@ -39,7 +39,7 @@ import flow above if you want to review unmatched tracks or create a playlist.
 
 ## How matching works
 
-- For a **playlist**, tidalt reads the title and artist of every track and searches
+- For a **playlist**, gotidal reads the title and artist of every track and searches
   Tidal with `title artist`, taking the top result as the match.
 - For a **single track**, only the combined title string is available (see below),
   so the match is fuzzier than for playlists.
@@ -52,7 +52,7 @@ import flow above if you want to review unmatched tracks or create a playlist.
 Spotify locked down its Web API in February 2026: the Client Credentials flow no
 longer returns metadata, and even a full user-OAuth token can only read playlists
 the signed-in user owns. There is therefore no official, credential-free way to
-read an arbitrary public playlist. tidalt uses the two remaining no-login paths:
+read an arbitrary public playlist. gotidal uses the two remaining no-login paths:
 
 - **Track URLs** are resolved through Spotify's official **oEmbed** endpoint, which
   returns the track's title only — there is no separate, structured artist field,

@@ -5,11 +5,35 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
+
+// TestProcParent guards the /proc/<pid>/stat parsing ancestorIsFoot relies
+// on: the process name is delimited by '(' and the *last* ')' (not the
+// first — a process name can itself contain parentheses or spaces), and the
+// parent pid is the second field after that. Uses this test binary's own
+// process, which always has a real, inspectable parent under Linux.
+func TestProcParent(t *testing.T) {
+	ppid, comm, ok := procParent(os.Getpid())
+	if !ok {
+		t.Fatal("procParent(self) should succeed on Linux")
+	}
+	if ppid <= 0 {
+		t.Errorf("ppid = %d, want a positive pid", ppid)
+	}
+	if comm == "" {
+		t.Error("comm should not be empty")
+	}
+
+	// A pid that (almost certainly) doesn't exist must fail cleanly, not panic.
+	if _, _, ok := procParent(1 << 30); ok {
+		t.Error("procParent on a nonexistent pid should report ok=false")
+	}
+}
 
 // kittyCoverModel returns a Queue-section model wired to an in-memory writer,
 // standing in for the TTY that graphics escapes are written to.
@@ -200,6 +224,38 @@ func TestKittyCoverHiddenWhenTerminalTooSmall(t *testing.T) {
 			m.syncKittyCover()
 			if buf.Len() != 0 {
 				t.Errorf("hidden cover wrote %d bytes on idle sync, want 0", buf.Len())
+			}
+		})
+	}
+}
+
+// TestCoverBoxDimsIsSquare guards the square-cover-art fix: coverBoxDims must
+// derive rows from cols using cellAspect so the box is visually square (a
+// terminal cell renders roughly twice as tall as it is wide), not merely
+// square in cell count — and must shrink cols instead when height is the
+// tighter constraint.
+func TestCoverBoxDimsIsSquare(t *testing.T) {
+	cases := []struct {
+		name           string
+		availW, availH int
+	}{
+		{"width is the binding constraint", 40, 100},
+		{"height is the binding constraint", 100, 10},
+		{"exactly balanced", 40, 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cols, rows := coverBoxDims(tc.availW, tc.availH)
+			if cols <= 0 || rows <= 0 {
+				t.Fatalf("coverBoxDims(%d, %d) = (%d, %d), want positive", tc.availW, tc.availH, cols, rows)
+			}
+			if cols > tc.availW || rows > tc.availH {
+				t.Fatalf("coverBoxDims(%d, %d) = (%d, %d) exceeds available space", tc.availW, tc.availH, cols, rows)
+			}
+			gotAspect := float64(cols) / float64(rows)
+			if diff := gotAspect - cellAspect; diff < -0.15 || diff > 0.15 {
+				t.Errorf("coverBoxDims(%d, %d) = (%d, %d): cols/rows = %.2f, want ~%.2f (a visual square)",
+					tc.availW, tc.availH, cols, rows, gotAspect, cellAspect)
 			}
 		})
 	}

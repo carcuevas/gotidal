@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Benehiko/tidalt/v4/internal/spotify"
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/spotify"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
 // importStage tracks where the Spotify-import overlay is in its flow.
@@ -99,7 +99,7 @@ func (m *Model) createSpotifyPlaylistCmd(name string, ids []int) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	return func() tea.Msg {
-		uuid, err := client.CreatePlaylist(ctx, name, "Imported from Spotify via tidalt")
+		uuid, err := client.CreatePlaylist(ctx, name, "Imported from Spotify via gotidal")
 		if err != nil {
 			return errMsg(err)
 		}

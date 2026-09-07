@@ -1,20 +1,21 @@
-# Maintainer: Benehiko <https://github.com/Benehiko>
-pkgname=tidalt
+# Maintainer: carcuevas <https://github.com/carcuevas>
+pkgname=gotidal
 # Overridden at build time from the release tag (see packaging/arch/Dockerfile);
 # this default tracks the current major line.
-pkgver=4.0.2
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Tidal music player for Linux — bit-perfect FLAC via ALSA, MPRIS2, daemon mode"
 arch=('x86_64' 'aarch64')
-url="https://github.com/Benehiko/tidalt"
+url="https://github.com/carcuevas/gotidal"
 license=('Apache-2.0')
 depends=('alsa-lib' 'ffmpeg' 'dbus')
 makedepends=('go>=1.26')
 optdepends=(
     'playerctl: control playback from the command line'
     'kdeconnect: control playback from a phone (MPRIS2 bridge)'
+    'cava: spectrum visualizer in the Queue tab'
 )
-source=("$pkgname-$pkgver.tar.gz::https://github.com/Benehiko/tidalt/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/carcuevas/gotidal/archive/refs/tags/v$pkgver.tar.gz")
 b2sums=('SKIP')
 
 prepare() {
@@ -34,8 +35,8 @@ build() {
         -buildmode=pie \
         -mod=mod \
         -ldflags "-linkmode=external -X main.version=v$pkgver" \
-        -o tidalt \
-        ./cmd/tidalt
+        -o gotidal \
+        ./cmd/gotidal
 }
 
 check() {
@@ -47,11 +48,11 @@ package() {
     cd "$pkgname-$pkgver"
 
     # Binary
-    install -Dm755 tidalt "$pkgdir/usr/bin/tidalt"
+    install -Dm755 gotidal "$pkgdir/usr/bin/gotidal"
 
-    # Desktop file (for tidal:// URL handler; users run 'tidalt setup' to activate)
-    install -Dm644 cmd/tidalt/tidalt.desktop \
-        "$pkgdir/usr/share/applications/tidalt.desktop"
+    # Desktop file (for tidal:// URL handler; users run 'gotidal setup' to activate)
+    install -Dm644 cmd/gotidal/gotidal.desktop \
+        "$pkgdir/usr/share/applications/gotidal.desktop"
 
     # License
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0"

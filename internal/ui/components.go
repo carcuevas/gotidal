@@ -2,156 +2,17 @@ package ui
 
 import (
 	"fmt"
-	"math/rand/v2"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
-// logoLines is a 5-row ASCII art representation of "tidalt".
-var logoLines = [5]string{
-	` ████████╗██╗██████╗  █████╗ ██╗  ████████╗`,
-	`    ██╔══╝██║██╔══██╗██╔══██╗██║     ██╔══╝`,
-	`    ██║   ██║██║  ██║███████║██║     ██║   `,
-	`    ██║   ██║██║  ██║██╔══██║██║     ██║   `,
-	`    ██║   ██║██████╔╝██║  ██║███████╗██║   `,
-}
-
-// compactLogo is the small wordmark used in the sidebar header (scale 0).
-var compactLogo = [2]string{
-	`▀█▀ █ █▀▄ ▄▀▄ █   ▀█▀`,
-	` █  █ █▄▀ █▀█ █▄▄  █ `,
-}
-
-const (
-	numBars    = 9
-	numRows    = 5
-	barScale   = 10                            // fixed-point scale for smooth motion
-	barMax     = int(numRows * 0.8 * barScale) // 80% height ceiling, scaled
-	barMin     = 1                             // near-zero minimum, scaled
-	barStep    = 2                             // smoothing step per tick (scaled units)
-	retargetIn = 4                             // re-randomise target every N ticks
-)
-
-// updateBars advances the bar animation state by one tick. It smooths current
-// heights toward their targets and periodically picks new random targets.
-func updateBars(frame int, heights, targets *[numBars]int, isPlaying bool) {
-	if !isPlaying {
-		for b := range heights {
-			heights[b] = barMin
-			targets[b] = barMin
-		}
-		return
-	}
-
-	// Re-randomise targets on a staggered schedule so bars don't all move together.
-	for b := range targets {
-		if (frame+b*3)%retargetIn == 0 {
-			targets[b] = barMin + rand.IntN(barMax-barMin+1) //nolint:gosec // G404: equaliser bar animation does not need crypto-grade randomness
-		}
-	}
-
-	// Smooth each bar toward its target.
-	for b := range heights {
-		diff := targets[b] - heights[b]
-		switch {
-		case diff > barStep:
-			heights[b] += barStep
-		case diff < -barStep:
-			heights[b] -= barStep
-		default:
-			heights[b] = targets[b]
-		}
-	}
-}
-
-// gradColors returns the four-stop logo/eq gradient as a cycling slice, falling
+// gradColors returns the four-stop CAVA gradient as a cycling slice, falling
 // back gracefully if any stop is not a plain color.
 func gradColors(t Theme) []lipgloss.TerminalColor {
 	return []lipgloss.TerminalColor{t.P.Grad1, t.P.Grad2, t.P.Grad3, t.P.Grad4}
-}
-
-// musicBars renders the equaliser bar rows using pre-computed heights, colored
-// from the theme's gradient stops.
-func musicBars(frame int, heights [numBars]int, t Theme, isPlaying bool) [numRows]string {
-	dimStyle := lipgloss.NewStyle().Foreground(t.P.FgFaint)
-	palette := gradColors(t)
-
-	var rows [numRows]string
-	for row := range numRows {
-		var sb strings.Builder
-		sb.WriteString("  ") // gap between logo and bars
-		for b := range numBars {
-			h := (heights[b] + barScale - 1) / barScale // ceil-divide back to rows
-			switch {
-			case !isPlaying:
-				sb.WriteString(dimStyle.Render("▁"))
-			case row >= numRows-h:
-				idx := (frame + b) % len(palette)
-				sb.WriteString(lipgloss.NewStyle().Foreground(palette[idx]).Render("█"))
-			default:
-				sb.WriteRune(' ')
-			}
-			sb.WriteRune(' ') // gap between bars
-		}
-		rows[row] = sb.String()
-	}
-	return rows
-}
-
-// renderLogo returns the animated logo string. scale 0 renders the compact
-// 2-row sidebar wordmark; scale >= 1 renders the full 5-row ASCII art with EQ
-// bars. The wave color cycles the theme's gradient stops.
-func renderLogo(frame, barFrame int, barHeights [numBars]int, t Theme, scale int, isPlaying bool) string {
-	palette := gradColors(t)
-	period := len(palette)
-
-	if scale == 0 {
-		// Compact sidebar wordmark — color each glyph along the gradient.
-		var sb strings.Builder
-		for _, row := range compactLogo {
-			runes := []rune(row)
-			width := len(runes)
-			for col, r := range runes {
-				if r == ' ' {
-					sb.WriteRune(' ')
-					continue
-				}
-				idx := (col*period/width + frame) % period
-				if idx < 0 {
-					idx += period
-				}
-				sb.WriteString(lipgloss.NewStyle().Foreground(palette[idx]).Render(string(r)))
-			}
-			sb.WriteByte('\n')
-		}
-		return sb.String()
-	}
-
-	width := len([]rune(logoLines[0]))
-	bars := musicBars(barFrame, barHeights, t, isPlaying)
-
-	var sb strings.Builder
-	for rowIdx, row := range logoLines {
-		runes := []rune(row)
-		for col, r := range runes {
-			if r == ' ' || r == '╗' || r == '╔' || r == '╝' || r == '╚' || r == '═' || r == '║' || r == '╠' || r == '╣' || r == '╦' || r == '╩' || r == '╬' {
-				// Keep box-drawing and spaces uncoloured to preserve shape.
-				sb.WriteRune(r)
-				continue
-			}
-			idx := (col*period/width + frame) % period
-			if idx < 0 {
-				idx += period
-			}
-			sb.WriteString(lipgloss.NewStyle().Foreground(palette[idx]).Render(string(r)))
-		}
-		sb.WriteString(bars[rowIdx])
-		sb.WriteByte('\n')
-	}
-	return sb.String()
 }
 
 // rowOpts controls how renderTrackRow draws a single track line.
@@ -241,9 +102,9 @@ func renderKeyBar(t Theme, items [][2]string, w int) string {
 	return truncateStr(" "+sb.String(), w)
 }
 
-// renderNowPlayingBar renders the persistent bottom now-playing bar: a small
-// mini-EQ (when playing), the cyan track title, dim artist, and a thin progress
-// readout. Returns a multi-line block sized to width w.
+// renderNowPlayingBar renders the persistent bottom now-playing bar: the cyan
+// track title, dim artist, and a thin progress readout. Returns a multi-line
+// block sized to width w.
 func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	inner := max(w-2, 10)
 
@@ -253,14 +114,12 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 		return renderPanel(t, "", false, w, 3, body)
 	}
 
-	eq := miniEQ(t, m.barHeights, m.isPlaying)
 	// Right-aligned status (volume / device / shuffle) on the title row.
 	status := m.nowBarStatus(t)
-	titleRoom := max(inner-lipgloss.Width(eq)-1-lipgloss.Width(status)-1, 1)
+	titleRoom := max(inner-lipgloss.Width(status)-1, 1)
 	title := t.RowPlaying.Render(truncateStr(m.currentTrack.Title, titleRoom))
-	left := eq + " " + title
-	pad := max(inner-lipgloss.Width(left)-lipgloss.Width(status), 0)
-	head := left + strings.Repeat(" ", pad) + status
+	pad := max(inner-lipgloss.Width(title)-lipgloss.Width(status), 0)
+	head := title + strings.Repeat(" ", pad) + status
 
 	badge := ""
 	if q := m.currentQuality.Label(); q != "" {
@@ -302,30 +161,23 @@ func (m *Model) nowBarStatus(t Theme) string {
 	if m.shuffleMode != ShuffleOff {
 		parts = append(parts, "shuffle "+m.shuffleMode.String())
 	}
+	parts = append(parts, m.displayDevice())
+	return t.RowDim.Render(strings.Join(parts, "  ·  "))
+}
+
+// autoDeviceLabel is shown wherever no device has been resolved yet.
+const autoDeviceLabel = "auto"
+
+// displayDevice reports the ALSA device to show the user: the one actually
+// opened when known (which can differ from the requested one on a plughw:
+// fallback), else the requested device, else autoDeviceLabel.
+func (m *Model) displayDevice() string {
 	dev := m.currentDevice
 	if m.activeDevice != "" {
 		dev = m.activeDevice
 	}
 	if dev == "" {
-		dev = "auto"
+		dev = autoDeviceLabel
 	}
-	parts = append(parts, dev)
-	return t.RowDim.Render(strings.Join(parts, "  ·  "))
-}
-
-// miniEQ renders a tiny 4-bar equalizer indicator from the live bar heights.
-func miniEQ(t Theme, heights [numBars]int, isPlaying bool) string {
-	if !isPlaying {
-		return t.RowFaint.Render("▪")
-	}
-	levels := []rune("▁▂▃▄▅▆▇█")
-	var sb strings.Builder
-	style := lipgloss.NewStyle().Foreground(t.P.Cyan)
-	for i := range 4 {
-		h := heights[i*2] // sample a few bars
-		l := h * (len(levels) - 1) / max(barMax, 1)
-		l = max(min(l, len(levels)-1), 0)
-		sb.WriteRune(levels[l])
-	}
-	return style.Render(sb.String())
+	return dev
 }

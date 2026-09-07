@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Build a minimal, statically-linked FFmpeg for tidalt.
+# Build a minimal, statically-linked FFmpeg for gotidal.
 #
-# Only the demuxers/decoders tidalt actually needs are enabled (FLAC, AAC/mp4,
+# Only the demuxers/decoders gotidal actually needs are enabled (FLAC, AAC/mp4,
 # ALAC, PCM, Vorbis), which keeps the static archives small and free of the huge
 # transitive codec dependency chain that the distro's shared FFmpeg drags in.
 # Linking these archives statically (build the Go binary with `-tags staticav`)
@@ -15,7 +15,7 @@
 # Usage:
 #   build-static-ffmpeg.sh [PREFIX] [TARGETARCH]
 #
-#   PREFIX      install prefix (default: /tmp/tidalt-ffmpeg-static). Must match the path in
+#   PREFIX      install prefix (default: /tmp/gotidal-ffmpeg-static). Must match the path in
 #               internal/player/avcodec_static.go.
 #   TARGETARCH  Go-style arch of the build target: amd64 | arm64
 #               (default: native — no cross-compilation).
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 FFMPEG_VERSION="${FFMPEG_VERSION:-7.1.5}"
-PREFIX="${1:-/tmp/tidalt-ffmpeg-static}"
+PREFIX="${1:-/tmp/gotidal-ffmpeg-static}"
 TARGETARCH="${2:-}"
 
 case "${TARGETARCH}" in

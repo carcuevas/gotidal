@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -14,13 +15,69 @@ import (
 )
 
 // KittySupported reports whether the running terminal supports the Kitty
-// terminal graphics protocol. Ghostty, Kitty, and WezTerm all qualify.
+// terminal graphics protocol. Ghostty, Kitty, and WezTerm qualify.
+//
+// foot does NOT: despite superficially "kitty-branded" env vars floating
+// around in some setups, foot's own changelog shows it implements the kitty
+// *keyboard* protocol and OSC-99 desktop notifications, but never the kitty
+// *graphics* protocol — foot's actual image protocol is Sixel instead (see
+// SixelSupported).
 func KittySupported() bool {
 	switch os.Getenv("TERM_PROGRAM") {
 	case "ghostty", "WezTerm":
 		return true
 	}
 	return os.Getenv("KITTY_WINDOW_ID") != ""
+}
+
+// ancestorIsFoot walks up the process tree (Linux only, via /proc) looking
+// for "foot" — covers both a WM keybinding that execs `foot ... gotidal`
+// directly (parent is foot) and running gotidal from an interactive shell
+// prompt inside an already-open foot window (parent is the shell, foot is
+// further up). Bounded to a shallow walk; any read failure (non-Linux, a
+// vanished pid) just stops the walk and reports no match.
+func ancestorIsFoot() bool {
+	pid := os.Getpid()
+	for range 10 {
+		ppid, comm, ok := procParent(pid)
+		if !ok {
+			return false
+		}
+		if comm == "foot" {
+			return true
+		}
+		if ppid <= 1 {
+			return false
+		}
+		pid = ppid
+	}
+	return false
+}
+
+// procParent reads /proc/<pid>/stat for its parent pid and executable name.
+// The name is delimited by the first '(' and the *last* ')' in the line
+// (not the first) since comm can itself contain parentheses or spaces.
+func procParent(pid int) (ppid int, comm string, ok bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, "", false
+	}
+	s := string(data)
+	open := strings.IndexByte(s, '(')
+	closeIdx := strings.LastIndexByte(s, ')')
+	if open < 0 || closeIdx < 0 || closeIdx < open || closeIdx+2 > len(s) {
+		return 0, "", false
+	}
+	comm = s[open+1 : closeIdx]
+	fields := strings.Fields(s[closeIdx+1:])
+	if len(fields) < 2 {
+		return 0, "", false
+	}
+	ppidVal, err := strconv.Atoi(fields[1]) // fields[0] is state, fields[1] is ppid
+	if err != nil {
+		return 0, "", false
+	}
+	return ppidVal, comm, true
 }
 
 // kittyChunkSize is the maximum base64 payload length per Kitty APC chunk.

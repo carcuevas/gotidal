@@ -9,14 +9,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Benehiko/tidalt/v4/internal/mpris"
-	"github.com/Benehiko/tidalt/v4/internal/ui"
+	"github.com/carcuevas/gotidal/internal/mpris"
+	"github.com/carcuevas/gotidal/internal/ui"
 )
 
 // systemd user service unit template.
 const serviceTemplate = `[Unit]
-Description=tidalt — Tidal HiFi music player daemon
-Documentation=https://github.com/Benehiko/tidalt
+Description=gotidal — Tidal HiFi music player daemon
+Documentation=https://github.com/carcuevas/gotidal
 After=graphical-session.target
 PartOf=graphical-session.target
 
@@ -30,7 +30,7 @@ RestartSec=5s
 WantedBy=graphical-session.target
 `
 
-// runDaemon starts tidalt in headless daemon mode: full playback engine and
+// runDaemon starts gotidal in headless daemon mode: full playback engine and
 // MPRIS2 server, but no TUI. Control via client instances or playerctl.
 // It returns an error so the caller can exit after deferred cleanup runs.
 func runDaemon() error {
@@ -41,15 +41,15 @@ func runDaemon() error {
 
 	mprisServer, mprisErr := mpris.Start(ctx)
 	if errors.Is(mprisErr, mpris.ErrAlreadyRunning) {
-		return errors.New("a tidalt instance is already running")
+		return errors.New("a gotidal instance is already running")
 	}
 	if mprisErr != nil {
 		fmt.Fprintf(os.Stderr, "MPRIS unavailable: %v\n", mprisErr)
 	}
 
-	fmt.Printf("tidalt daemon running (user %d, country %s)\n", session.UserID, session.CountryCode)
+	fmt.Printf("gotidal daemon running (user %d, country %s)\n", session.UserID, session.CountryCode)
 	fmt.Println("No audio device is opened until playback starts.")
-	fmt.Println("Use 'tidalt' (client mode) or playerctl to control playback.")
+	fmt.Println("Use 'gotidal' (client mode) or playerctl to control playback.")
 	fmt.Println("Send SIGTERM or SIGINT to stop.")
 
 	// Run the BubbleTea model without alt-screen and without a TTY.
@@ -66,7 +66,7 @@ func runDaemon() error {
 	return nil
 }
 
-// runSetupDaemon installs a systemd --user service unit for tidalt, then
+// runSetupDaemon installs a systemd --user service unit for gotidal, then
 // enables and starts it.
 func runSetupDaemon() {
 	self, err := os.Executable()
@@ -80,7 +80,7 @@ func runSetupDaemon() {
 		fatalf("mkdir %s: %v", unitDir, err)
 	}
 
-	unitPath := filepath.Join(unitDir, "tidalt.service")
+	unitPath := filepath.Join(unitDir, "gotidal.service")
 	stepf("Writing %s", unitPath)
 
 	tmpl, err := template.New("unit").Parse(serviceTemplate)
@@ -102,14 +102,14 @@ func runSetupDaemon() {
 	}
 
 	run(false, "systemctl", "--user", "daemon-reload")
-	run(false, "systemctl", "--user", "enable", "tidalt.service")
-	run(false, "systemctl", "--user", "start", "tidalt.service")
+	run(false, "systemctl", "--user", "enable", "gotidal.service")
+	run(false, "systemctl", "--user", "start", "gotidal.service")
 
 	fmt.Println()
 	fmt.Println("Daemon installed and started.")
 	fmt.Println()
-	fmt.Println("  Status : systemctl --user status tidalt")
-	fmt.Println("  Logs   : journalctl --user -u tidalt -f")
-	fmt.Println("  Stop   : systemctl --user stop tidalt")
-	fmt.Println("  Disable: systemctl --user disable --now tidalt")
+	fmt.Println("  Status : systemctl --user status gotidal")
+	fmt.Println("  Logs   : journalctl --user -u gotidal -f")
+	fmt.Println("  Stop   : systemctl --user stop gotidal")
+	fmt.Println("  Disable: systemctl --user disable --now gotidal")
 }

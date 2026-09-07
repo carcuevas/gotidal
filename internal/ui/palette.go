@@ -13,7 +13,7 @@ func progressWithTheme(t Theme, w int) progress.Model {
 	)
 }
 
-// Palette is the full set of color tokens that define a TIDALT color scheme.
+// Palette is the full set of color tokens that define a GOTIDAL color scheme.
 // Field types are lipgloss.TerminalColor (not lipgloss.Color) so the "Auto"
 // scheme can hold lipgloss.AdaptiveColor values that flip with the terminal's
 // background; the fixed built-in schemes use lipgloss.Color string literals.

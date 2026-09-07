@@ -17,12 +17,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v4/internal/logger"
-	"github.com/Benehiko/tidalt/v4/internal/mpris"
-	"github.com/Benehiko/tidalt/v4/internal/player"
-	"github.com/Benehiko/tidalt/v4/internal/spotify"
-	"github.com/Benehiko/tidalt/v4/internal/store"
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/logger"
+	"github.com/carcuevas/gotidal/internal/mpris"
+	"github.com/carcuevas/gotidal/internal/player"
+	"github.com/carcuevas/gotidal/internal/spotify"
+	"github.com/carcuevas/gotidal/internal/store"
+	"github.com/carcuevas/gotidal/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/visualizer"
 )
 
 // ShuffleMode controls how the track list is shuffled.
@@ -56,6 +57,8 @@ const (
 	OverlayDeviceSelect
 	OverlayAddToPlaylist
 	OverlayImportSpotify
+	OverlayHelp
+	OverlaySongInfo
 )
 
 //nolint:recvcheck // tea.Model requires value-receiver Init/Update/View; helper methods mutate via pointer receiver
@@ -66,14 +69,19 @@ type Model struct {
 	store  *store.SecretsStore
 	player *player.Player
 
-	// Navigation: which sidebar Section is active, the active modal Overlay,
-	// whether focus is on the main pane (vs. the sidebar), and the sidebar nav
-	// cursor. prevSection records where to return after the artist drill-down.
-	section       Section
-	overlay       Overlay
-	focusMain     bool
-	sidebarCursor int
-	prevSection   Section
+	// Navigation: which tab is active and the active modal Overlay. focusMain is
+	// always true post-init (there is no sidebar to cede focus to — every
+	// render*Pane function still takes it so the "focused" row styling renders
+	// the same way it always has). prevSection records where to return after the
+	// artist drill-down.
+	section     Section
+	overlay     Overlay
+	focusMain   bool
+	prevSection Section
+
+	// pendingKey holds a leading key of a two-key sequence (rmpc's "g"/"o"
+	// prefix chains, e.g. gt/gT, oI/oo) awaiting its second key.
+	pendingKey string
 
 	// Action sheet overlay state.
 	sheetTrack  *tidal.Track
@@ -163,6 +171,11 @@ type Model struct {
 	devices       []player.DeviceInfo
 	currentDevice string // hw device string, "" = auto-detect
 
+	// interTrackSilenceMs is the persisted inter-track silence gap (0 =
+	// gapless, the default) — see commandPalette's toggle entry and
+	// Player.SetInterTrackSilenceMs.
+	interTrackSilenceMs uint32
+
 	// Player UI
 	currentTrack   *tidal.Track
 	currentQuality tidal.Quality // granted stream quality tier for currentTrack
@@ -180,17 +193,9 @@ type Model struct {
 	currPos      float64
 	duration     float64
 
-	// Logo animation
-	logoFrame int
-	barFrame  int // advances on the faster bar tick
-
-	// barHeights holds the current smoothed height (×10 for sub-integer motion)
-	// and target height for each equaliser bar.
-	barHeights [9]int // current height scaled ×10
-	barTargets [9]int // target height scaled ×10
-	// barsTicking is true while the fast (80ms) equaliser tick is scheduled. It
+	// barsTicking is true while the fast Cava-refresh tick is scheduled. It
 	// lapses when playback stops and is restarted by the 1s tick on resume, so
-	// the UI doesn't re-render 12×/s while idle.
+	// the UI doesn't re-render while idle.
 	barsTicking bool
 
 	// MPRIS media key commands (nil in client mode)
@@ -208,7 +213,7 @@ type Model struct {
 	// "Open in desktop app"). Consumed once during Init.
 	openURL string
 
-	// clientMode is true when a parent tidalt instance is already running.
+	// clientMode is true when a parent gotidal instance is already running.
 	// Playback commands are forwarded over D-Bus instead of driving the local player.
 	clientMode  bool
 	mprisClient *mpris.Client
@@ -236,20 +241,25 @@ type Model struct {
 	coverCacheKey string      // UUID of the currently displayed cover
 
 	// kittySupported is set once at startup; when true the Now-Playing cover is
-	// drawn with the Kitty graphics protocol at absolute coordinates, otherwise
-	// Unicode block art is used.
+	// drawn with the Kitty graphics protocol at absolute coordinates. Mutually
+	// exclusive with sixelSupported in practice (see KittySupported/
+	// SixelSupported); Unicode block art is the fallback when neither applies.
 	kittySupported bool
+	sixelSupported bool
 
 	// kitty caches the expensive PNG-encode + tracks what was last emitted so
 	// the image escape is only re-encoded/re-sent on a real change (new cover
 	// or resize), not on every animation frame. Pointer-backed so the
-	// value-receiver Update can mutate it.
+	// value-receiver Update can mutate it. sixel is the equivalent cache for
+	// the Sixel path (see sixelState — its cache invalidation rules differ:
+	// a geometry change forces a full re-encode, not just a re-placement).
 	kitty *kittyState
+	sixel *sixelState
 
-	// ttyOut is where Kitty graphics escapes are written. They cannot go
-	// through the View string — BubbleTea's renderer truncates and de-dupes
-	// lines, which mangles or drops them — so they are written out of band,
-	// after the frame that reserves the box has been painted.
+	// ttyOut is where graphics escapes (Kitty or Sixel) are written. They
+	// cannot go through the View string — BubbleTea's renderer truncates and
+	// de-dupes lines, which mangles or drops them — so they are written out
+	// of band, after the frame that reserves the box has been painted.
 	ttyOut io.Writer
 
 	// Theme / color scheme.
@@ -261,6 +271,21 @@ type Model struct {
 	palette        Palette
 	theme          Theme
 	previewPalette *Palette
+
+	// CAVA spectrum visualizer. cava is nil in client mode (there is no local
+	// player/PCM to tap) and when the cava binary isn't installed; either way
+	// the Cava pane just shows its placeholder. cavaBars is the latest
+	// display-scaled (0-100) snapshot, refreshed on the fast bar tick.
+	cava     *visualizer.Cava
+	cavaBars []int
+
+	// Synced-lyrics panel state for the currently displayed track.
+	lyricsState lyricsState
+
+	// headless is true for the daemon (WithoutGraphics): there is no Lyrics
+	// or Cava pane to show anything in, so both are skipped entirely rather
+	// than doing work — a network fetch, a subprocess — nothing will display.
+	headless bool
 }
 
 // loadTheme resolves the persisted theme name (or the default) into the model's
@@ -296,7 +321,15 @@ func (m *Model) activeTheme() Theme {
 // escapes to stdout would corrupt its log output.
 func (m Model) WithoutGraphics() Model {
 	m.kittySupported = false
+	m.sixelSupported = false
 	m.ttyOut = nil
+	m.headless = true
+	// The daemon has no Cava pane to draw into — disable it rather than
+	// spawning and feeding a subprocess nothing will ever display.
+	if m.cava != nil {
+		m.cava.Stop()
+		m.cava = nil
+	}
 	return m
 }
 
@@ -320,6 +353,9 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		p.SetDevice(dev)
 	}
 
+	interTrackSilenceMs, _ := s.LoadInterTrackSilenceMs()
+	p.SetInterTrackSilenceMs(interTrackSilenceMs)
+
 	var mprisCh <-chan mpris.Event
 	if srv != nil {
 		mprisCh = srv.Commands
@@ -327,33 +363,42 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 
 	themeName, palette, theme := loadTheme(s)
 
+	var cava *visualizer.Cava
+	if visualizer.Available() {
+		cava = visualizer.New(numCavaBars)
+	}
+
 	return Model{
-		ctx:            ctx,
-		client:         client,
-		store:          s,
-		player:         p,
-		searchInput:    ti,
-		section:        SecQueue,
-		focusMain:      true,
-		volume:         vol,
-		currentDevice:  currentDevice,
-		bitPerfect:     true,
-		progress:       progressWithTheme(theme, 40),
-		mprisCh:        mprisCh,
-		favorites:      make(map[int]bool),
-		openURL:        openURL,
-		mprisServer:    srv,
-		kittySupported: KittySupported(),
-		ttyOut:         os.Stdout,
-		kitty:          &kittyState{},
-		themeName:      themeName,
-		palette:        palette,
-		theme:          theme,
+		ctx:                 ctx,
+		client:              client,
+		store:               s,
+		player:              p,
+		searchInput:         ti,
+		section:             SecQueue,
+		focusMain:           true,
+		volume:              vol,
+		currentDevice:       currentDevice,
+		interTrackSilenceMs: interTrackSilenceMs,
+		bitPerfect:          true,
+		progress:            progressWithTheme(theme, 40),
+		mprisCh:             mprisCh,
+		favorites:           make(map[int]bool),
+		openURL:             openURL,
+		mprisServer:         srv,
+		kittySupported:      KittySupported(),
+		sixelSupported:      SixelSupported(),
+		ttyOut:              os.Stdout,
+		kitty:               &kittyState{},
+		sixel:               &sixelState{},
+		themeName:           themeName,
+		palette:             palette,
+		theme:               theme,
+		cava:                cava,
 	}
 }
 
 // ClientModel creates a TUI model that forwards all playback actions to an
-// already-running tidalt instance via the provided mprisClient. The local
+// already-running gotidal instance via the provided mprisClient. The local
 // player is not started. The UI is tinted to indicate client mode.
 func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, mprisClient *mpris.Client, openURL string) Model {
 	ti := textinput.New()
@@ -394,8 +439,10 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		clientMode:     true,
 		mprisClient:    mprisClient,
 		kittySupported: KittySupported(),
+		sixelSupported: SixelSupported(),
 		ttyOut:         os.Stdout,
 		kitty:          &kittyState{},
+		sixel:          &sixelState{},
 		themeName:      themeName,
 		palette:        palette,
 		theme:          theme,
@@ -646,13 +693,16 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// barTickCmd schedules the Cava-refresh tick at roughly cava's own configured
+// framerate (30fps / ~33ms) so the visualizer doesn't visibly lag behind the
+// audio it's tracking.
 func barTickCmd() tea.Cmd {
-	return tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(33*time.Millisecond, func(t time.Time) tea.Msg {
 		return barTickMsg(t)
 	})
 }
 
-// ensureBarsTicking returns the command to (re)start the fast equaliser tick if
+// ensureBarsTicking returns the command to (re)start the fast Cava-refresh tick if
 // it has lapsed, marking it running. Returns nil when it is already scheduled.
 func (m *Model) ensureBarsTicking() []tea.Cmd {
 	if m.barsTicking {
@@ -846,7 +896,13 @@ func fetchCoverCmd(cover string) tea.Cmd {
 	return func() tea.Msg {
 		img, err := fetchCoverImage(tidal.CoverURL(cover, "640x640"))
 		if err != nil {
-			return errMsg(err)
+			// Cover art is decorative — a 404 on one size variant, a
+			// transient CDN hiccup — and now fetches on every queue-cursor
+			// move (the AlbumArt pane is always visible), so this must not
+			// interrupt the user with an error toast. The pane already
+			// handles a nil image gracefully.
+			logger.L.Debug("cover fetch failed", "cover", cover, "err", err)
+			return nil
 		}
 		return coverLoadedMsg{key: cover, img: img}
 	}
@@ -887,8 +943,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return next, cmd
 	}
+	// The Cava animation tick fires every ~33ms and never touches a line the
+	// AlbumArt column shares with anything else, so it's the one message
+	// type excluded from forcing a Sixel redraw (see syncSixelCover) —
+	// forcing it there too would mean writing the encoded image ~30x/sec.
+	_, isBarTick := msg.(barTickMsg)
 	sync := func() tea.Msg {
 		nm.syncKittyCover()
+		nm.syncSixelCover(!isBarTick)
 		return nil
 	}
 	if cmd == nil {
@@ -956,8 +1018,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.player.Seek(pos)
 		}
 		bars := m.ensureBarsTicking()
-		cmds := make([]tea.Cmd, 0, 2+len(bars))
+		cmds := make([]tea.Cmd, 0, 3+len(bars))
 		cmds = append(cmds, waitForTrackDone(msg.done, msg.gen), m.maybeUpdateCover(m.coverTrack()))
+		if m.currentTrack != nil && !m.headless {
+			m.lyricsState = lyricsState{trackID: m.currentTrack.ID, loading: true}
+			cmds = append(cmds, fetchLyricsCmd(m.ctx, m.store, *m.currentTrack))
+		}
 		cmds = append(cmds, bars...)
 		return m, tea.Batch(cmds...)
 
@@ -966,12 +1032,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.coverImage = msg.img
 		}
 
+	case lyricsLoadedMsg:
+		if m.currentTrack == nil || msg.trackID != m.currentTrack.ID {
+			break // stale — the track changed while this fetch was in flight
+		}
+		if msg.err != nil || msg.result == nil {
+			m.lyricsState = lyricsState{trackID: msg.trackID, notFound: true}
+			break
+		}
+		m.lyricsState = lyricsState{
+			trackID:  msg.trackID,
+			lines:    msg.result.Lines,
+			plain:    msg.result.Plain,
+			notFound: !msg.result.Found,
+		}
+
 	case barTickMsg:
-		m.barFrame++
-		updateBars(m.barFrame, &m.barHeights, &m.barTargets, m.isPlaying)
-		// The fast equaliser animation only needs to run while playing — when
-		// stopped the bars are flat and re-rendering 12×/s is wasted work. Drop
-		// to the 1s logo tick when idle; the 1s tick restarts this one when
+		if m.cava != nil {
+			m.cavaBars = m.cava.Bars(100)
+		}
+		// This tick only needs to run while playing — when stopped there's
+		// nothing new to show and re-rendering ~30×/s is wasted work. Drop to
+		// the 1s logo tick when idle; the 1s tick restarts this one when
 		// playback resumes.
 		if m.isPlaying {
 			return m, barTickCmd()
@@ -980,7 +1062,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		m.logoFrame++
 		if m.isPlaying && !m.clientMode {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
@@ -995,6 +1076,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 			_ = m.store.SaveLastPosition(m.currPos)
 			m.pushState()
+			// Best-effort: (re)configure cava for the current stream's format.
+			// A no-op when it's already running with this rate/channels.
+			if m.cava != nil {
+				rate, channels := m.player.Format()
+				m.cava.Configure(rate, channels, m.player.TapPCM())
+			}
 		}
 		cmds := []tea.Cmd{tickCmd()}
 		// Restart the fast equaliser tick if playback resumed while it was idle
@@ -1446,21 +1533,13 @@ func (m Model) View() string {
 	}
 	t := m.activeTheme()
 
-	sidebarW, mainW := m.layoutDims()
+	mainW := max(m.width, 1)
 	bodyH := m.bodyHeight()
 
 	main := m.renderMain(t, mainW, bodyH)
+	tabBar := m.renderTabBar(t, m.width)
 
-	var body string
-	if sidebarW == 0 {
-		body = main
-	} else {
-		sidebar := m.renderSidebar(t, sidebarW, bodyH)
-		gap := strings.Repeat(" ", zoneGap)
-		body = lipgloss.JoinHorizontal(lipgloss.Top, sidebar, gap, main)
-	}
-
-	parts := []string{body}
+	parts := []string{tabBar, main}
 	switch {
 	case m.toast != "":
 		parts = append(parts, t.GreenT.Render(" "+truncateStr(m.toast, m.width-2)))
@@ -1571,6 +1650,101 @@ func (m *Model) syncKittyCover() {
 	ks.stale = false
 }
 
+// syncSixelCover is syncKittyCover's Sixel counterpart — same out-of-band
+// write, but two real differences from Kitty:
+//
+//  1. Sixel bakes its target pixel size into the encoded data itself (no
+//     "upload once, place many times"), so a geometry change forces a full
+//     re-encode, not just a cheap re-placement.
+//  2. Sixel rasterizes straight into the character grid — there is no
+//     separate compositing layer the way Kitty graphics has. BubbleTea's
+//     renderer diffs and repaints whole *lines*, and the AlbumArt column is
+//     horizontally joined onto the same lines as the Queue list and Cava
+//     strip: whenever the queue's selected row (or anything else sharing a
+//     line with the art) changes, BubbleTea repaints that entire line with
+//     plain spaces — silently punching blank gaps into the image. forceRedraw
+//     re-places the (already-encoded, so cheap) image on every such Update to
+//     paint back over whatever BubbleTea's frame just clobbered; it is false
+//     only for the high-frequency Cava animation tick, which never touches a
+//     line the art shares with anything else.
+func (m *Model) syncSixelCover(forceRedraw bool) {
+	if !m.sixelSupported || m.ttyOut == nil {
+		return
+	}
+	if m.sixel == nil {
+		m.sixel = &sixelState{}
+	}
+	ss := m.sixel
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	col, row, cols, rows, ok := m.coverBoxRect()
+	if !ok || !m.useSixelCover() {
+		if ss.drawnKey != "" || ss.stale {
+			out := sixelClearBox(ss.drawnCol, ss.drawnRow, ss.drawnCols, ss.drawnRows)
+			ss.drawnKey = ""
+			ss.stale = false
+			m.writeGfx(out)
+		}
+		return
+	}
+
+	// coverBoxDims chose cols/rows assuming a fixed cellAspect (2.0); the
+	// terminal's *real* cell aspect ratio, queried below, is almost never
+	// exactly that. Multiplying cols/rows by the real per-axis cell size
+	// independently would bake that mismatch straight into a stretched
+	// image, so instead take the largest true square (equal width and
+	// height in real pixels) that fits within the reserved cell box — it
+	// may not fill both dimensions of a box sized under the wrong
+	// assumption, but it is never distorted.
+	cellW, cellH := cellPixelSize(m.ttyFd())
+	side := min(float64(cols)*cellW, float64(rows)*cellH)
+	pxW, pxH := int(side), int(side)
+	encodeKey := fmt.Sprintf("%s@%dx%d", m.coverCacheKey, pxW, pxH)
+
+	moved := ss.drawnKey != encodeKey || ss.drawnCol != col || ss.drawnRow != row
+	if !moved && !ss.stale && !forceRedraw {
+		return // nothing changed and nothing else could have clobbered it
+	}
+
+	if ss.encodeKey != encodeKey {
+		ss.escape = sixelEncode(m.coverImage, pxW, pxH)
+		ss.encodeKey = encodeKey
+	}
+	if ss.escape == "" {
+		return
+	}
+
+	var out strings.Builder
+	// Only clear-then-redraw when the box actually moved/resized (leaving a
+	// stale copy behind at the old spot); a same-spot forced redraw just
+	// re-rasterizes over the identical cells, no separate clear needed.
+	if (moved || ss.stale) && ss.drawnKey != "" {
+		out.WriteString(sixelClearBox(ss.drawnCol, ss.drawnRow, ss.drawnCols, ss.drawnRows))
+	}
+	out.WriteString(sixelPlaceAt(col, row, ss.escape))
+
+	if !m.writeGfx(out.String()) {
+		ss.encodeKey = ""
+		ss.drawnKey = ""
+		return
+	}
+	ss.drawnKey = encodeKey
+	ss.drawnCol, ss.drawnRow, ss.drawnCols, ss.drawnRows = col, row, cols, rows
+	ss.stale = false
+}
+
+// ttyFd returns the file descriptor backing ttyOut for ioctl queries
+// (cellPixelSize), or -1 if it isn't a real file (e.g. a test's in-memory
+// buffer) — cellPixelSize already falls back gracefully on an invalid fd.
+func (m *Model) ttyFd() int {
+	f, ok := m.ttyOut.(*os.File)
+	if !ok {
+		return -1
+	}
+	return int(f.Fd())
+}
+
 // writeGfx writes a graphics escape to the TTY, reporting whether it landed. A
 // failed write is not surfaced to the user: the cover is decorative, and the
 // terminal is the same channel any error message would have to travel over.
@@ -1591,40 +1765,36 @@ func (m *Model) writeGfx(s string) bool {
 	return true
 }
 
-// coverBoxRect returns the 1-indexed screen position and cell size of the cover
-// image box for the active section, and whether a cover box is shown. The Queue
-// places it on the right of the track list.
-func (m *Model) coverBoxRect() (col, row, panelW, imgRows int, ok bool) {
+// coverBoxRect returns the 1-indexed screen position and cell size of the
+// square AlbumArt box for the active tab, and whether it is shown at all. The
+// Queue tab places it at the top of the left column, below the tab bar.
+func (m *Model) coverBoxRect() (col, row, cols, rows int, ok bool) {
 	if m.section != SecQueue {
 		return 0, 0, 0, 0, false
 	}
-	sidebarW, mainW := m.layoutDims()
-	coverW, show := m.queueCoverWidth(mainW)
-	if !show {
+	g := m.queueLayout(max(m.width, 1), m.bodyHeight())
+	if !g.showLeft || g.albumArtCols <= 0 || g.albumArtRows <= 0 {
 		return 0, 0, 0, 0, false
 	}
-	mainLeft := 0
-	if sidebarW > 0 {
-		mainLeft = sidebarW + zoneGap
-	}
-	listW := mainW - coverW
-	pw, ir := m.queueCoverDims(coverW, m.bodyHeight())
-	col = mainLeft + listW + 1 /* cover panel left border */ + 1 /* 1-indexed */
-	row = 1 /* panel top border */ + 1                           /* 1-indexed */
-	return col, row, pw, ir, true
+	innerW := max(g.leftW-2, 1)
+	padLeft := max((innerW-g.albumArtCols)/2, 0)
+	col = 1 /*1-indexed*/ + 1 /*panel left border*/ + padLeft
+	row = tabBarH + 1 /*panel top border*/ + 1 /*1-indexed*/
+	return col, row, g.albumArtCols, g.albumArtRows, true
 }
 
 // footerKeyBar returns the context-sensitive key hint bar for the current
 // section.
 func (m *Model) footerKeyBar(t Theme, w int) string {
 	base := [][2]string{
+		{"1-9", "Tabs"},
 		{"j/k", "Move"},
-		{"h/l", "Pane"},
 		{"↵", "Play"},
-		{"Space", "Pause"},
-		{"o", "Actions"},
+		{"p", "Pause"},
+		{"Ctrl+X", "Actions"},
 		{":", "Command"},
 		{"/", "Search"},
+		{"?", "Help"},
 		{"q", "Quit"},
 	}
 	switch m.section {
@@ -1632,10 +1802,10 @@ func (m *Model) footerKeyBar(t Theme, w int) string {
 		base = [][2]string{
 			{"j/k", "Move"},
 			{"↵", "Play"},
-			{"x", "Remove"},
-			{"C", "Clear"},
-			{"S", "Save"},
-			{"o", "Actions"},
+			{"d", "Remove"},
+			{"D", "Clear"},
+			{"Ctrl+S a", "Save"},
+			{"Ctrl+X", "Actions"},
 			{":", "Command"},
 			{"q", "Quit"},
 		}
@@ -1643,15 +1813,14 @@ func (m *Model) footerKeyBar(t Theme, w int) string {
 		base = [][2]string{
 			{"↵", "Search/Play"},
 			{"j/k", "Move"},
-			{"o", "Actions"},
-			{"f", "Fav"},
-			{"a", "Artist"},
+			{"Ctrl+X", "Actions"},
+			{"F", "Fav"},
 			{":", "Command"},
 			{"q", "Quit"},
 		}
 	case SecSettings:
 		base = [][2]string{
-			{"j/k", "Preview"}, {"↵", "Apply"}, {"t", "Cycle"}, {"Esc", "Cancel"}, {"q", "Quit"},
+			{"j/k", "Move"}, {"↵", "Select"}, {"t", "Cycle theme"}, {"Esc", "Back"}, {"q", "Quit"},
 		}
 	default:
 	}
@@ -1675,6 +1844,10 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 	case OverlayActionSheet:
 		popup = m.renderActionSheet(t)
 		anchorCentered = false
+	case OverlayHelp:
+		popup = m.renderHelpOverlay(t)
+	case OverlaySongInfo:
+		popup = m.renderSongInfoOverlay(t)
 	default:
 		return base
 	}
@@ -1687,10 +1860,9 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 	x := max((m.width-pw)/2, 0)
 	y := max((m.height-ph)/2, 0)
 	if !anchorCentered {
-		// Anchor the action sheet near the selected row: just right of the
-		// sidebar, vertically tracking the cursor but clamped on-screen.
-		sidebarW, _ := m.layoutDims()
-		x = min(sidebarW+4, max(m.width-pw-1, 0))
+		// Anchor the action sheet near the selected row: near the left edge,
+		// vertically tracking the cursor but clamped on-screen.
+		x = min(4, max(m.width-pw-1, 0))
 		y = min(max(m.cursor+2, 1), max(m.height-ph-2, 1))
 	}
 	return PlaceOverlay(x, y, popup, dim(t, base))

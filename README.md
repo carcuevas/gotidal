@@ -1,6 +1,6 @@
-![tidalt TUI](docs/tui.png)
+![gotidal TUI](docs/tui.png)
 
-**tidalt** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling. (A small number of USB interfaces expose a fixed native format and cannot be driven this way; see [fixed-format audio interfaces](#fixed-format-audio-interfaces).)
+**goTidal** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling. (A small number of USB interfaces expose a fixed native format and cannot be driven this way; see [fixed-format audio interfaces](#fixed-format-audio-interfaces).)
 
 It is built on top of the Tidal API and can run in three ways:
 
@@ -18,26 +18,26 @@ All three modes share the same playback engine. The daemon holds exclusive acces
 
 ## Install
 
-Pre-built packages are available on the [releases page](https://github.com/Benehiko/tidalt/releases).
-The official Docker image is available at [`benehiko/tidalt`](https://hub.docker.com/r/benehiko/tidalt) — see [docs/docker.md](docs/docker.md) for usage.
+Pre-built packages are available on the [releases page](https://github.com/carcuevas/gotidal/releases).
+The official Docker image is available at [`carcuevas/gotidal`](https://hub.docker.com/r/carcuevas/gotidal) — see [docs/docker.md](docs/docker.md) for usage.
 
 ### Arch Linux
 
 ```bash
-sudo pacman -U tidalt-*.pkg.tar.zst
+sudo pacman -U gotidal-*.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
 
 ```bash
-sudo dpkg -i tidalt_*.deb
+sudo dpkg -i gotidal_*.deb
 sudo apt-get install -f
 ```
 
 ### Fedora
 
 ```bash
-sudo dnf install tidalt-*.rpm
+sudo dnf install gotidal-*.rpm
 ```
 
 ### Build packages locally with Docker
@@ -52,7 +52,7 @@ docker buildx create --use
 # Build all packages (replace VERSION as needed)
 docker buildx bake \
   --file docker-bake.hcl \
-  --set "*.args.VERSION=3.0.0" \
+  --set "*.args.VERSION=1.0.0" \
   --set "*.output=type=local,dest=dist"
 ```
 
@@ -60,11 +60,11 @@ Artifacts land in `dist/`:
 
 ```
 dist/
-  tidalt-3.0.0-1-x86_64.pkg.tar.zst   # Arch
-  tidalt_3.0.0-1_amd64.deb            # Debian / Ubuntu (amd64)
-  tidalt_3.0.0-1_arm64.deb            # Debian / Ubuntu (arm64)
-  tidalt-3.0.0-1.fc43.x86_64.rpm      # Fedora (amd64)
-  tidalt-3.0.0-1.fc43.aarch64.rpm     # Fedora (arm64)
+  gotidal-1.0.0-1-x86_64.pkg.tar.zst   # Arch
+  gotidal_1.0.0-1_amd64.deb            # Debian / Ubuntu (amd64)
+  gotidal_1.0.0-1_arm64.deb            # Debian / Ubuntu (arm64)
+  gotidal-1.0.0-1.fc43.x86_64.rpm      # Fedora (amd64)
+  gotidal-1.0.0-1.fc43.aarch64.rpm     # Fedora (arm64)
 ```
 
 To build a single target: append `debian`, `arch`, or `fedora` to the command.
@@ -75,38 +75,42 @@ without Docker or installing from source.
 ### Post-install
 
 Register the `tidal://` URL handler so clicking **"Open in desktop app"** on
-tidal.com opens the track directly in tidalt:
+tidal.com opens the track directly in gotidal:
 
 ```bash
-tidalt setup
+gotidal setup
 ```
 
-Optionally install tidalt as a systemd user service (starts at login, no
+Optionally install gotidal as a systemd user service (starts at login, no
 terminal window):
 
 ```bash
-tidalt setup --daemon
+gotidal setup --daemon
 ```
 
 ---
 
-On first launch you will be prompted to log in via the Tidal OAuth2 device flow. Your session is saved to the system keychain (or an age-encrypted file at `~/.config/tidalt/secrets`) and reused on subsequent runs.
+On first launch you will be prompted to log in via the Tidal OAuth2 device flow. Your session is saved to the system keychain (or an age-encrypted file at `~/.config/gotidal/secrets`) and reused on subsequent runs.
 
 ---
 
 ## Features
 
-- **Sidebar navigation** — a persistent left nav groups every section: Queue (with the hovered track's cover art), Playlists, Favorite Songs / Artists / Albums, Recently Played, Daily Mixes, Search, and Themes
-- **Contextual action sheet** (`o`) — from any track, open a popup of actions: play now, play next, add to queue, add to playlist, start radio, go to artist/album, favorite, copy link
-- **Command palette** (`:` or `Ctrl+P`) — fuzzy-run any action or jump to any section
-- **Hybrid queue / playlist model** — the queue is your live workspace; opening a saved playlist loads it and tracks its origin. The header shows `synced`, `edited — S save`, or `radio · unsaved — S save`, and `S` saves the queue as a new playlist. Edits never silently change a saved playlist
-- **First-class favorites** — browse favorite songs, artists, and albums as their own sections
+- **rmpc-style numbered tab bar** — Queue, Playlists, Artists, Albums, Songs, Mixes, Search, History, and Settings, each its own tab (`1`-`9`, `Tab`/`Shift+Tab`); keybindings follow [rmpc](https://github.com/mierak/rmpc) throughout, so if you already know rmpc you already know gotidal
+- **Square album art** — the Queue tab's cover-art panel is sized to render as a true visual square (accounting for the terminal's cell aspect ratio), not just a square cell count
+- **CAVA spectrum visualizer** — a live frequency-bands strip in the Queue tab, driven by the real [`cava`](https://github.com/karlstav/cava) binary over a FIFO tee of already-decoded audio. Optional: with no `cava` installed the pane just shows a placeholder, and nothing else changes — the tee never touches the bit-perfect ALSA write path
+- **Synced lyrics** — a Lyrics panel in the Queue tab, fetched from [LRCLIB](https://lrclib.net) and highlighted line-by-line against playback position; falls back to plain lyrics or "No lyrics found" gracefully
+- **Contextual action sheet** (`Ctrl+X`) — from any track, open a popup of actions: play now, play next, add to queue, add to playlist, start radio, go to artist/album, favorite, copy link
+- **Command palette** (`:` or `Ctrl+P`) — fuzzy-run any action or jump to any tab
+- **Hybrid queue / playlist model** — the queue is your live workspace; opening a saved playlist loads it and tracks its origin. The header shows `synced`, `edited — Ctrl+S a save`, or `radio · unsaved — Ctrl+S a save`, and `Ctrl+S a` saves the queue as a new playlist. Edits never silently change a saved playlist
+- **First-class favorites** — browse favorite songs, artists, and albums as their own tabs
 - **Grouped search** — results are split into Songs / Artists / Albums; drill into an artist or album from any hit
-- **Import from Spotify** — paste a Spotify track or playlist URL (command palette → "Import from Spotify…") and tidalt finds each song on Tidal, flagging anything it can't match as _not available_; then create a Tidal playlist or load the matches into the queue. No Spotify login required. See [docs/spotify-import.md](docs/spotify-import.md)
-- **In-app theme picker** — eight built-in color schemes (TIDALT, Catppuccin, Tokyo Night, Gruvbox, Nord, Rosé Pine, Dracula, Amber CRT) plus an "Auto — match terminal" option, with live preview as you move the cursor; the choice is persisted
+- **Import from Spotify** — paste a Spotify track or playlist URL (command palette → "Import from Spotify…") and gotidal finds each song on Tidal, flagging anything it can't match as _not available_; then create a Tidal playlist or load the matches into the queue. No Spotify login required. See [docs/spotify-import.md](docs/spotify-import.md)
+- **In-app theme picker** — eight built-in color schemes (goTidal, Catppuccin, Tokyo Night, Gruvbox, Nord, Rosé Pine, Dracula, Amber CRT) plus an "Auto — match terminal" option, with live preview as you move the cursor; the choice is persisted
+- **CD-recorder silence gap** (command palette → "Toggle CD-recorder silence gap…") — inserts a 2-second gap of true digital silence between tracks instead of gapless playback, so a downstream CD/DAT recorder's own silence-based auto-track-detection has something to key off. Off by default; never touches either track's own samples, so it doesn't affect bit-perfectness either way
 - Artist view — browse an artist's full discography and play everything, their top tracks, or a single album
 - Song radio — build a queue of similar tracks for any song
-- Shuffle (Fisher-Yates pre-shuffle or random pick)
+- Shuffle toggle (`x`) plus a one-shot queue reshuffle (`X`)
 - Bit-perfect FLAC playback via direct ALSA `hw:` — bypasses PipeWire/PulseAudio entirely (see [fixed-format devices](#fixed-format-audio-interfaces))
 - Auto-negotiates the best PCM format your DAC supports
 - Auto-advances through the queue; respects shuffle mode
@@ -123,39 +127,48 @@ See [docs/ui.md](docs/ui.md) for a full tour of the interface.
 
 ### In-TUI
 
-The interface has two focus zones: the **sidebar** (section navigation) and the
-**main pane** (the selected section's content). `h` / `l` move focus between them.
+Keybindings follow **[rmpc](https://github.com/mierak/rmpc)** — if you already
+use rmpc, you already know gotidal. The interface is a numbered top tab bar
+(`1`-`9`) rather than a sidebar; each tab is its own self-contained view.
 
-| Key                | Action                                                        |
-| ------------------ | ------------------------------------------------------------- |
-| `j` / `k` (`↓`/`↑`)| Move the cursor                                               |
-| `h` / `l`          | Move focus between the sidebar and the main pane              |
-| `Enter`            | Open the section / play the selected track / confirm          |
-| `o`                | Open the contextual action sheet for the selected track       |
-| `:` / `Ctrl+P`     | Open the command palette                                      |
-| `/`                | Jump to Search                                                |
-| `Space`            | Pause / resume                                                |
-| `←` / `→`          | Seek back / forward 10 seconds                                |
-| `>` / `<`          | Next / previous track                                         |
-| `s`                | Cycle shuffle mode (Off → Shuffle → Random)                   |
-| `r`                | Start a radio queue from the selected track                   |
-| `a`                | Open the artist view for the selected track                   |
-| `f`                | Toggle favorite on the selected track                         |
-| `S`                | Save the current queue as a new playlist                      |
-| `x`                | Remove the selected track from the queue                      |
-| `C`                | Clear the queue                                               |
-| `t`                | Cycle the color theme                                         |
-| `9` / `0`          | Volume down / up 5%                                           |
-| `c`                | Copy the current track link to the clipboard                  |
-| `d`                | Open the output device selector                               |
-| `Esc`              | Close an overlay / back out of the artist view / refocus the sidebar |
-| `q` / `Ctrl+C`     | Quit                                                          |
+| Key                 | Action                                                                     |
+| ------------------- | --------------------------------------------------------------------------|
+| `1`-`9`             | Jump to a tab (Queue, Playlists, Artists, Albums, Songs, Mixes, Search, History, Settings) |
+| `Tab` / `gt`        | Next tab                                                                   |
+| `Shift+Tab` / `gT`  | Previous tab                                                               |
+| `j` / `k` (`↓`/`↑`) | Move the cursor                                                            |
+| `gg` / `G`          | Jump to the top / bottom of the current list                              |
+| `Ctrl+u` / `Ctrl+d` | Half-page up / down                                                        |
+| `Ctrl+b` / `Ctrl+f` | Page up / down                                                             |
+| `Enter`             | Open the tab's item / play the selected track / confirm                    |
+| `p`                 | Play / pause                                                               |
+| `s`                 | Stop (pause and rewind to the start)                                       |
+| `f` / `b`           | Seek forward / back 10 seconds                                             |
+| `>` / `<`           | Next / previous track                                                     |
+| `.` / `,`           | Volume up / down 5%                                                        |
+| `x` / `X`           | Toggle shuffle / one-shot reshuffle the queue (Queue tab)                  |
+| `a` / `A`           | Add the selected track / add every visible track to the queue              |
+| `d` / `D`           | Remove the selected track from the queue / clear the queue (Queue tab)     |
+| `K` / `J`           | Move a queue item up / down (Queue tab)                                    |
+| `F`                 | Toggle favorite on the selected track                                     |
+| `r`                 | Start a radio queue from the selected track                                |
+| `y`                 | Copy the current track's Tidal link to the clipboard                       |
+| `Ctrl+X`            | Open the contextual action sheet for the selected track                    |
+| `oo`                | Open the output device selector                                            |
+| `oI`                | Show current-song info                                                     |
+| `Ctrl+S a`          | Save the current queue as a new playlist                                   |
+| `t`                 | Cycle the color theme                                                      |
+| `:` / `Ctrl+P`      | Open the command palette                                                   |
+| `/`                 | Jump to Search                                                             |
+| `?`                 | Show the full keybinding reference                                        |
+| `Esc`               | Close an overlay / back out of the artist view / playlist detail          |
+| `q` / `Ctrl+C`      | Quit                                                                       |
 
 ### Global shortcuts (MPRIS2)
 
-> **Daemon mode required.** These shortcuts only work when `tidalt` is running as a background daemon (via `tidalt setup --daemon` / systemd). A plain `tidalt` TUI session does not register a persistent MPRIS2 service, so media keys and `playerctl` will have no effect when the TUI is closed.
+> **Daemon mode required.** These shortcuts only work when `gotidal` is running as a background daemon (via `gotidal setup --daemon` / systemd). A plain `gotidal` TUI session does not register a persistent MPRIS2 service, so media keys and `playerctl` will have no effect when the TUI is closed.
 
-When the daemon is running, `tidalt` registers as an MPRIS2 media player so playback can be controlled from any MPRIS2 client — `playerctl`, KDE Connect, your desktop environment's media key handler — without a TUI open.
+When the daemon is running, `gotidal` registers as an MPRIS2 media player so playback can be controlled from any MPRIS2 client — `playerctl`, KDE Connect, your desktop environment's media key handler — without a TUI open.
 
 #### Standard media keys
 
@@ -167,7 +180,7 @@ Many keyboards and desktop environments map dedicated media keys directly to MPR
 | `fn` + `,` | Previous track |
 | `fn` + `/` | Next track     |
 
-These are handled by your desktop environment via MPRIS2 — tidalt does not implement any special key capture itself.
+These are handled by your desktop environment via MPRIS2 — gotidal does not implement any special key capture itself.
 
 #### Custom bindings (65% keyboards)
 
@@ -196,9 +209,9 @@ Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be select
 
 ### Fixed-format audio interfaces
 
-Most DACs let tidalt negotiate the stream's native shape on the `hw:` endpoint, which is what makes bit-perfect output possible. A few USB audio interfaces — Focusrite's Vocaster line, for example — instead expose a *fixed* native channel count, sample rate, and format, and reject anything else outright.
+Most DACs let gotidal negotiate the stream's native shape on the `hw:` endpoint, which is what makes bit-perfect output possible. A few USB audio interfaces — Focusrite's Vocaster line, for example — instead expose a *fixed* native channel count, sample rate, and format, and reject anything else outright.
 
-When tidalt detects that refusal it reopens the device through ALSA's plug layer (`plughw:`), which resamples and remixes to whatever the hardware accepts. Playback works, but the output is **no longer bit-perfect**. The now-playing bar makes this visible: the device readout shows the `plughw:` device actually in use, and the quality badge is marked `(converted)`.
+When gotidal detects that refusal it reopens the device through ALSA's plug layer (`plughw:`), which resamples and remixes to whatever the hardware accepts. Playback works, but the output is **no longer bit-perfect**. The now-playing bar makes this visible: the device readout shows the `plughw:` device actually in use, and the quality badge is marked `(converted)`.
 
 This fallback only engages on a genuine format refusal. Transient failures — such as PipeWire not having finished releasing the device — are retried against `hw:` as before, so a device that can do bit-perfect output is never silently downgraded.
 
@@ -208,9 +221,30 @@ This fallback only engages on a genuine format refusal. Transient failures — s
 
 | What                       | Where                                                         |
 | -------------------------- | ------------------------------------------------------------- |
-| OAuth2 session             | System keychain or `~/.config/tidalt/secrets` (age-encrypted) |
-| Volume & device preference | `~/.local/share/tidalt/tidal-cache.db`                        |
+| OAuth2 session             | System keychain or `~/.config/gotidal/secrets` (age-encrypted) |
+| Volume & device preference | `~/.local/share/gotidal/gotidal-cache.db`                        |
 | Track metadata cache       | Same database                                                 |
+| Lyrics cache (hit or miss) | Same database                                                 |
+
+---
+
+## License
+
+gotidal is licensed under the **[Apache License, Version 2.0](LICENSE)**.
+
+This repository is a fork of [Benehiko/tidalt](https://github.com/Benehiko/tidalt)
+(also Apache-2.0); files have been modified from the original — see
+[NOTICE](NOTICE) for the attribution this carries under the license.
+
+Two features in this fork talk to third-party software at runtime, neither of
+which is bundled or linked into gotidal itself:
+
+- The spectrum visualizer invokes the system's **[`cava`](https://github.com/karlstav/cava)**
+  binary (GPL-3.0) as a subprocess, if installed — an optional runtime
+  dependency, not a bundled or linked one, so no copyleft obligation attaches
+  to gotidal.
+- Synced lyrics are fetched at runtime from the free, public **[LRCLIB](https://lrclib.net)**
+  API.
 
 ---
 
@@ -224,6 +258,7 @@ This fallback only engages on a genuine format refusal. Transient failures — s
 - [MPRIS2 support](docs/mpris2.md)
 - [Importing from Spotify](docs/spotify-import.md)
 - [DAC compatibility](docs/dac-compatibility.md)
+- [Synced lyrics](docs/lyrics.md)
 - [Media keys & MPRIS2 setup](docs/media-keys.md)
 - [Browser URL handler troubleshooting](docs/browser-url-handler.md)
 - [Debugging](docs/debugging.md)

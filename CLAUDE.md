@@ -11,7 +11,7 @@
 
 ## Package overview
 
-### `cmd/tidalt`
+### `cmd/gotidal`
 Entry point. Handles signal setup, session load/restore from the secrets store, OAuth2 device-flow login on first run, and launches the BubbleTea TUI program.
 
 ### `internal/tidal`
@@ -31,16 +31,22 @@ Bit-perfect FLAC playback via CGO + libasound.
 - Demuxes and decodes the HTTP stream in-flight via FFmpeg (libavformat/libavcodec/libswresample, CGO) — FLAC, AAC/mp4, and ALAC — resampling to S32LE. A custom AVIO callback feeds bytes straight from the HTTP response. FFmpeg is linked dynamically for local/dev/CI builds (needs the distro's libav*-dev headers); the official distro packages (`packaging/`) bundle a minimal static FFmpeg built from source, selected with the `staticav` build tag
 - Volume, pause, and position tracking via atomics
 - Auto-detects known DACs (Hidizs S9 Pro, Hidizs S9 Pro Plus "Martha", Focusrite Scarlett Solo) from `/proc/asound/cards`
+- `TapPCM()`/`Format()`: a non-blocking tee of the packed PCM buffer (post-volume, pre-`snd_pcm_writei`) for `internal/visualizer`'s CAVA driver. Sends are `select`-with-`default` — a slow/absent consumer drops frames, never blocks the write path. This is the *only* thing in this package that exists for the visualizer; do not add anything else here for it
+- `SetInterTrackSilenceMs()`: optional, off-by-default gap of zero-valued PCM written at the gapless track-transition point (`writeSilence` in `mpv.go`), for a downstream CD/DAT recorder's own silence-based auto-track-detection. Never touches either track's own samples. Toggled via the command palette; persisted in bbolt (`SaveInterTrackSilenceMs`/`LoadInterTrackSilenceMs`)
 
 ### `internal/store`
 Persistent storage.
-- OAuth2 session stored securely via `docker/secrets-engine` (system keychain, falling back to age-encrypted file at `~/.config/tidalt/secrets`)
-- Volume, selected device, and track metadata cache stored in a bbolt database at `~/.local/share/tidalt/tidal-cache.db`
+- OAuth2 session stored securely via `docker/secrets-engine` (system keychain, falling back to age-encrypted file at `~/.config/gotidal/secrets`)
+- Volume, selected device, and track metadata cache stored in a bbolt database at `~/.local/share/gotidal/gotidal-cache.db`
 
 ### `internal/ui`
-BubbleTea TUI model (Model/Update/View).
-- Five states: `StateBrowse`, `StateMixes`, `StateSearch`, `StateDeviceSelect`, `StateArtistAlbums`
+BubbleTea TUI model (Model/Update/View). Keybindings and layout follow rmpc
+(github.com/mierak/rmpc): a numbered top tab bar (`Section`, 9 entries in
+`tabEntries`, `1`-`9` / `Tab` / `gt`/`gT` to switch), not a sidebar.
+- `keys.go`: global keys (`handleGlobalKey`), two-key prefix chains (`g`/`o`/`Ctrl+S` via `pendingKey` + `handlePendingKey`), generic list nav (`gg`/`G`/half-page/page via `activeCursorRef`), and per-tab handlers
+- Queue tab: left column is AlbumArt (square — see `coverBoxDims` in `layout.go`) / Cava (`cava_pane.go`) / Lyrics (`lyrics_pane.go`), right column is the track list (`queueLayout` in `sections.go` degrades gracefully as space runs out)
+- AlbumArt rendering: Kitty graphics protocol (`termgfx.go`, `KittySupported()` — ghostty/kitty/WezTerm) or Sixel (`sixel.go`, `SixelSupported()` — foot, detected via `TERM=foot` or, since foot.ini commonly overrides TERM, an ancestor-process walk via `ancestorIsFoot()`/`procParent()`) or Unicode block-art as the fallback (`coverart.go`). **foot supports Sixel, not Kitty graphics** — confirmed by grepping foot's own upstream changelog for every "kitty" mention: all of them are the kitty *keyboard* protocol or OSC-99 notifications, never graphics. Don't re-add foot to `KittySupported()`. Sixel bakes its target pixel size into the encoded data (no Kitty-style "upload once, place many times"), so `syncSixelCover` re-encodes on any geometry change, not just a cover change; `cellPixelSize()` queries the real terminal cell size via `TIOCGWINSZ` to encode at the correct pixel size instead of relying on the terminal to rescale
 - Scrollable track and mix lists with a visible window helper
-- Artist view (`StateArtistAlbums`): opened with `a` on any track; lists the artist's albums plus "Play all tracks" / "Top tracks" entries, loading the chosen tracks into the browse queue
+- Artist drill-down (`m.showArtist`): opened with `a` inside the action sheet (`Ctrl+X`); lists the artist's albums plus "Play all tracks" / "Top tracks" entries, loading the chosen tracks into the queue
 - Progress bar with playback position, volume display, and device label
 - Auto-advances to the next track in the queue when playback finishes

@@ -96,6 +96,9 @@ github.com/mattn/go-localereader
 # github.com/mattn/go-runewidth v0.0.19
 ## explicit; go 1.20
 github.com/mattn/go-runewidth
+# github.com/mattn/go-sixel v0.0.12
+## explicit; go 1.24.0
+github.com/mattn/go-sixel
 # github.com/mdp/qrterminal/v3 v3.2.1
 ## explicit; go 1.20
 github.com/mdp/qrterminal/v3
@@ -115,6 +118,11 @@ github.com/pkg/browser
 # github.com/rivo/uniseg v0.4.7
 ## explicit; go 1.18
 github.com/rivo/uniseg
+# github.com/soniakeys/quant v1.0.0
+## explicit
+github.com/soniakeys/quant
+github.com/soniakeys/quant/internal
+github.com/soniakeys/quant/median
 # github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e
 ## explicit; go 1.19
 github.com/xo/terminfo

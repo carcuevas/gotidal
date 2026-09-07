@@ -11,7 +11,7 @@ This project is a high-fidelity Tidal terminal client written in Go (1.26+), foc
 
 ## Project Structure
 
-- `cmd/tidalt/`: The entry point. Handles initial authentication, vault restoration, and launches the Bubble Tea TUI.
+- `cmd/gotidal/`: The entry point. Handles initial authentication, vault restoration, and launches the Bubble Tea TUI.
 - `internal/tidal/`: Core Tidal API client. Implements the OAuth2 Device Authorization Grant flow and all API interactions (search, favorites, mixes, stream URL resolution).
 - `internal/player/`: The audio engine. Uses CGO to interface with ALSA for bit-perfect playback. Handles D-Bus device reservation to ensure exclusive access to the DAC.
 - `internal/ui/`: The terminal user interface built with `bubbletea`. Manages state for browsing, searching, and playback control.

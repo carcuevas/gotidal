@@ -1,12 +1,12 @@
 variable "VERSION" {
-  default = "3.0.0"
+  default = "1.0.0"
 }
 
 variable "OUTPUT_DIR" {
   default = "./dist"
 }
 
-# DOCKER_TAG is set to the full Git tag (e.g. "v3.0.0") in CI.
+# DOCKER_TAG is set to the full Git tag (e.g. "v1.0.0") in CI.
 variable "DOCKER_TAG" {
   default = "latest"
 }
@@ -65,7 +65,7 @@ target "docker" {
   }
   platforms = ["linux/amd64", "linux/arm64"]
   tags = [
-    "benehiko/tidalt:${DOCKER_TAG}",
-    "benehiko/tidalt:latest",
+    "benehiko/gotidal:${DOCKER_TAG}",
+    "benehiko/gotidal:latest",
   ]
 }

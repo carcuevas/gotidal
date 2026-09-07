@@ -17,7 +17,7 @@ RUN dpkg --add-architecture ${TARGETARCH} && \
     rm -rf /var/lib/apt/lists/*
 
 COPY packaging/build-static-ffmpeg.sh /build-static-ffmpeg.sh
-RUN bash /build-static-ffmpeg.sh /tmp/tidalt-ffmpeg-static ${TARGETARCH}
+RUN bash /build-static-ffmpeg.sh /tmp/gotidal-ffmpeg-static ${TARGETARCH}
 
 # ── Build stage: compile the binary, statically linking the FFmpeg above ──────
 FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
@@ -27,7 +27,7 @@ ARG VERSION
 
 WORKDIR /src
 COPY . .
-COPY --from=ffmpeg /tmp/tidalt-ffmpeg-static /tmp/tidalt-ffmpeg-static
+COPY --from=ffmpeg /tmp/gotidal-ffmpeg-static /tmp/gotidal-ffmpeg-static
 
 RUN dpkg --add-architecture ${TARGETARCH} && \
     apt-get update && \
@@ -46,8 +46,8 @@ RUN case "${TARGETARCH}" in \
         -trimpath \
         -buildmode=pie \
         -ldflags "-s -w -linkmode=external -X main.version=v${VERSION}" \
-        -o /out/tidalt \
-        ./cmd/tidalt
+        -o /out/gotidal \
+        ./cmd/gotidal
 
 # ── Package stage: assemble the .deb with dpkg-deb ───────────────────────────
 FROM debian:stable-slim AS package
@@ -62,36 +62,36 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libasound2t64 && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/tidalt /pkg/usr/bin/tidalt
-COPY cmd/tidalt/tidalt.desktop /pkg/usr/share/applications/tidalt.desktop
+COPY --from=build /out/gotidal /pkg/usr/bin/gotidal
+COPY cmd/gotidal/gotidal.desktop /pkg/usr/share/applications/gotidal.desktop
 
 # Compute the installed size in kibibytes (required by Debian policy).
 RUN INSTALLED_SIZE=$(du -sk /pkg | cut -f1) && \
     mkdir -p /pkg/DEBIAN && \
     cat > /pkg/DEBIAN/control <<EOF
-Package: tidalt
+Package: gotidal
 Version: ${VERSION}-1
 Architecture: ${TARGETARCH}
-Maintainer: Benehiko <https://github.com/Benehiko>
+Maintainer: carcuevas <https://github.com/carcuevas>
 Installed-Size: ${INSTALLED_SIZE}
 Depends: libasound2t64
 Recommends: playerctl
 Suggests: kdeconnect
 Section: sound
 Priority: optional
-Homepage: https://github.com/Benehiko/tidalt
+Homepage: https://github.com/carcuevas/gotidal
 Description: Tidal music player for Linux — bit-perfect FLAC via ALSA
- tidalt is a Tidal music player that delivers bit-perfect, lossless audio
+ gotidal is a Tidal music player that delivers bit-perfect, lossless audio
  directly to your DAC via ALSA hw: — bypassing PipeWire and PulseAudio
  entirely.
 EOF
 
-RUN chmod 755 /pkg/usr/bin/tidalt && \
-    chmod 644 /pkg/usr/share/applications/tidalt.desktop && \
-    dpkg-deb --root-owner-group --build /pkg /tidalt_${VERSION}-1_${TARGETARCH}.deb
+RUN chmod 755 /pkg/usr/bin/gotidal && \
+    chmod 644 /pkg/usr/share/applications/gotidal.desktop && \
+    dpkg-deb --root-owner-group --build /pkg /gotidal_${VERSION}-1_${TARGETARCH}.deb
 
 # ── Export stage ─────────────────────────────────────────────────────────────
 FROM scratch AS artifact
 ARG TARGETARCH
 ARG VERSION
-COPY --from=package /tidalt_${VERSION}-1_${TARGETARCH}.deb /
+COPY --from=package /gotidal_${VERSION}-1_${TARGETARCH}.deb /

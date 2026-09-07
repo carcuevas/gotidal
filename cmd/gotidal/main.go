@@ -11,10 +11,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/sys/unix"
 
-	"github.com/Benehiko/tidalt/v4/internal/mpris"
-	"github.com/Benehiko/tidalt/v4/internal/store"
-	"github.com/Benehiko/tidalt/v4/internal/tidal"
-	"github.com/Benehiko/tidalt/v4/internal/ui"
+	"github.com/carcuevas/gotidal/internal/mpris"
+	"github.com/carcuevas/gotidal/internal/store"
+	"github.com/carcuevas/gotidal/internal/tidal"
+	"github.com/carcuevas/gotidal/internal/ui"
 )
 
 // version is the build version, injected at release time via
@@ -64,6 +64,7 @@ func signalContext() (context.Context, context.CancelFunc) {
 // stderr and exits.
 func loadSession(ctx context.Context) (*tidal.Client, *store.SecretsStore, tidal.Session) {
 	client := tidal.NewClient()
+	//nolint:contextcheck // store.NewSecretsStore does not accept a context; nothing to thread
 	vault := store.NewSecretsStore(readPassphrase)
 
 	var session tidal.Session
@@ -131,7 +132,7 @@ func dispatch() error {
 		runLogout()
 		return nil
 	case "version", "--version", "-v":
-		fmt.Println("tidalt " + version)
+		fmt.Println("gotidal " + version)
 		return nil
 	default:
 		// Treat os.Args[1] as an optional tidal:// or https://tidal.com/ URL

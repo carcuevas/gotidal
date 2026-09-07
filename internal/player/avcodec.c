@@ -2,6 +2,7 @@
 // avcodec.h. See avcodec.go for the Go side of this boundary.
 #include "avcodec.h"
 
+#include <libavutil/log.h>
 #include <libavutil/opt.h>
 
 #include <stdlib.h>
@@ -10,6 +11,13 @@
 #define AVIO_BUF_SIZE ((size_t)32 * 1024)
 
 int av_open(av_decoder_t *d, void *opaque) {
+    // FFmpeg's default log callback writes straight to stderr, which shares
+    // the terminal with BubbleTea's alt-screen — a stray decoder warning
+    // (e.g. the AAC decoder's benign "Could not update timestamps for
+    // discarded samples" during a seek) corrupts the TUI frame. This is a
+    // global, idempotent setting; setting it on every open is harmless.
+    av_log_set_level(AV_LOG_QUIET);
+
     memset(d, 0, sizeof(*d));
 
     unsigned char *avio_buf = (unsigned char *)av_malloc(AVIO_BUF_SIZE);
