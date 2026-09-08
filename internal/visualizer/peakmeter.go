@@ -8,13 +8,16 @@ import (
 	"time"
 )
 
-// PeakMeter computes a decaying peak level (0..1) per audio channel directly
+// PeakMeter computes a decaying RMS level (0..1) per audio channel directly
 // from the same decoded, post-volume PCM tap Cava reads (player.Player.TapPCM,
 // fanned out via Broadcast) — no subprocess, no FFT, just signal amplitude.
-// This is what a traditional VU/peak meter actually measures (loudness),
-// as distinct from Cava's spectrum bars (frequency content). Unlike Cava it
-// has no external dependency, so it's available even when the cava binary
-// isn't installed.
+// RMS (root-mean-square over each buffer), not the single loudest sample in
+// it: a true-peak reading spikes to near-0dBFS on every transient in any
+// well-mastered/limited track and, combined with a decay slow enough to stay
+// visible, reads as permanently pinned near the top even though the track
+// itself is nowhere near clipping. RMS is what a real VU meter measures and
+// what actually tracks perceived loudness. Unlike Cava it has no external
+// dependency, so it's available even when the cava binary isn't installed.
 type PeakMeter struct {
 	channels atomic.Uint32 // 0 until the first Configure call
 
@@ -97,8 +100,8 @@ func (m *PeakMeter) run(ctx context.Context, stopped chan struct{}, pcmTap <-cha
 const peakDecayPerSecond = 1.6 // ~625ms from full scale to zero
 
 // update decodes S32LE interleaved samples (the format player.Player always
-// writes — see mpv.go) and folds each channel's loudest sample in this buffer
-// into a wall-clock-decayed peak level.
+// writes — see mpv.go) and folds each channel's RMS level over this buffer
+// into a wall-clock-decayed level.
 func (m *PeakMeter) update(buf []byte) {
 	channels := int(m.channels.Load())
 	const bytesPerSample = 4
@@ -107,15 +110,21 @@ func (m *PeakMeter) update(buf []byte) {
 		return
 	}
 
-	peaks := make([]float64, channels)
+	sumSq := make([]float64, channels)
+	frames := 0
 	for off := 0; off+frameBytes <= len(buf); off += frameBytes {
 		for c := range channels {
 			i := off + c*bytesPerSample
 			s := int32(uint32(buf[i]) | uint32(buf[i+1])<<8 | uint32(buf[i+2])<<16 | uint32(buf[i+3])<<24)
-			v := math.Abs(float64(s)) / math.MaxInt32
-			if v > peaks[c] {
-				peaks[c] = v
-			}
+			v := float64(s) / math.MaxInt32
+			sumSq[c] += v * v
+		}
+		frames++
+	}
+	rms := make([]float64, channels)
+	if frames > 0 {
+		for c := range channels {
+			rms[c] = math.Sqrt(sumSq[c] / float64(frames))
 		}
 	}
 
@@ -129,16 +138,26 @@ func (m *PeakMeter) update(buf []byte) {
 	m.lastAt = now
 	for c := range m.level {
 		m.level[c] = max(m.level[c]-decay, 0)
-		if peaks[c] > m.level[c] {
-			m.level[c] = peaks[c]
+		if rms[c] > m.level[c] {
+			m.level[c] = rms[c]
 		}
 	}
 	m.levelMu.Unlock()
 }
 
-// Levels returns each channel's current peak level scaled to [0, maxHeight],
-// mirroring Cava.Bars' contract so render code can treat either source the
-// same way. Returns nil until the first buffer has been processed.
+// peakMeterFloorDB is the bottom of the meter's displayed dB range. Linear
+// amplitude packs nearly all of a typical mastered track's peaks into the
+// last few percent below full scale — a track peaking at -3dBFS already
+// reads as ~0.7 linear, i.e. 70% up the bar — so a meter scaled linearly
+// looks pinned near max almost constantly. Real peak/VU meters read in dB for
+// exactly this reason; Levels converts to dB against this floor so normal
+// program material actually shows movement instead of sitting maxed out.
+const peakMeterFloorDB = -48.0
+
+// Levels returns each channel's current peak level scaled to [0, maxHeight]
+// on a dB scale (see peakMeterFloorDB), mirroring Cava.Bars' contract so
+// render code can treat either source the same way. Returns nil until the
+// first buffer has been processed.
 func (m *PeakMeter) Levels(maxHeight int) []int {
 	m.levelMu.RLock()
 	defer m.levelMu.RUnlock()
@@ -147,7 +166,12 @@ func (m *PeakMeter) Levels(maxHeight int) []int {
 	}
 	out := make([]int, len(m.level))
 	for i, v := range m.level {
-		h := int(v * float64(maxHeight))
+		db := peakMeterFloorDB
+		if v > 0 {
+			db = 20 * math.Log10(v)
+		}
+		frac := max((db-peakMeterFloorDB)/-peakMeterFloorDB, 0)
+		h := int(frac * float64(maxHeight))
 		out[i] = max(min(h, maxHeight), 0)
 	}
 	return out

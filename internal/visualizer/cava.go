@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -213,19 +214,37 @@ func (c *Cava) readBars(stdout io.Reader) {
 // it's the fixed ceiling cava's own values are already scaled against.
 const asciiMaxRange = 1000
 
-// Bars returns a copy of the most recent bar heights, scaled to [0, maxHeight].
+// barsFloorDB is the bottom of each bar's displayed dB range — the same fix
+// applied to the Peak meter (see visualizer.peakMeterFloorDB) applied here:
+// a *linear* v/asciiMaxRange mapping compresses almost all of a real
+// frequency band's dynamic range into the last few percent below the
+// ceiling (quiet passages — a cappella verses, sparse arrangements — read as
+// literally zero height, "no bar at all", while anything moderately present
+// reads as pinned near the top, "always saturated"). A dB scale spreads
+// that out the way a real spectrum analyzer does, so quiet content is still
+// visible and loud content doesn't look maxed out by default.
+const barsFloorDB = -36.0
+
+// Bars returns a copy of the most recent bar heights, scaled to [0, maxHeight]
+// on a dB scale (see barsFloorDB) against the fixed asciiMaxRange ceiling.
 //
 // This intentionally does not re-normalize against its own running peak: with
-// autosens off (see cavaConfig), cava's raw values already scale linearly
-// with actual input loudness against the fixed asciiMaxRange ceiling. Any
-// further auto-gain here would recreate the "everything reads as maxed out"
-// problem that turning autosens off was meant to fix.
+// autosens off (see cavaConfig), cava's raw values already scale with actual
+// input loudness against that fixed ceiling. Any further auto-gain here
+// would recreate the "everything reads as maxed out" problem turning
+// autosens off was meant to fix.
 func (c *Cava) Bars(maxHeight int) []int {
 	c.barsMu.RLock()
 	defer c.barsMu.RUnlock()
 	out := make([]int, len(c.latest))
 	for i, v := range c.latest {
-		h := v * maxHeight / asciiMaxRange
+		amp := float64(v) / float64(asciiMaxRange)
+		db := barsFloorDB
+		if amp > 0 {
+			db = 20 * math.Log10(amp)
+		}
+		frac := max((db-barsFloorDB)/-barsFloorDB, 0)
+		h := int(frac * float64(maxHeight))
 		out[i] = max(min(h, maxHeight), 0)
 	}
 	return out
@@ -242,14 +261,21 @@ func cavaConfig(bars int, rate uint32, channels uint8, fifoPath string) string {
 	// ascii_max_range regardless of how loud the input actually is, so a
 	// quiet passage ends up reading exactly as "full" as a loud one — the
 	// opposite of a meter that reflects real loudness. A fixed sensitivity
-	// with autosens off preserves genuine relative dynamics instead.
-	fmt.Fprintf(&b, "[general]\nframerate = 60\nbars = %d\nautosens = 0\nsensitivity = 400\n\n", bars)
+	// with autosens off preserves genuine relative dynamics instead — but
+	// only at a sane gain: 400 (a 4x fixed multiplier, no auto-adjustment to
+	// rein it back in) clipped most real program material to the ceiling
+	// almost constantly, and cava's own unity-gain default of 100 read the
+	// opposite way, too quiet most of the time. 150 landed as the best
+	// middle ground after listening at 100, 200, and 250.
+	fmt.Fprintf(&b, "[general]\nframerate = 60\nbars = %d\nautosens = 0\nsensitivity = 150\n\n", bars)
 	fmt.Fprintf(&b, "[input]\nmethod = fifo\nsource = %s\nsample_rate = %d\nsample_bits = 32\nchannels = %d\n\n",
 		fifoPath, rate, channels)
 	b.WriteString("[output]\nmethod = raw\nchannels = mono\ndata_format = ascii\nascii_max_range = 1000\nbar_delimiter = 59\n\n")
 	// Between cava's own (rather sluggish) default of 77 and a too-twitchy
-	// 30: 50 tracks the audio closely without visibly jittering frame to frame.
-	b.WriteString("[smoothing]\nnoise_reduction = 50\nmonstercat = 1\nwaves = 0\n")
+	// 30: 40 responds more immediately than 50 did (less of a perceived
+	// "holds the last value too long" lag) while still not visibly jittering
+	// frame to frame.
+	b.WriteString("[smoothing]\nnoise_reduction = 40\nmonstercat = 1\nwaves = 0\n")
 	return b.String()
 }
 
