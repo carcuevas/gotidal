@@ -1,7 +1,7 @@
 # Running gotidal in Docker
 
-The official image is published to Docker Hub at `carcuevas/gotidal` and is built
-for `linux/amd64` and `linux/arm64`.
+The official image is published to the GitHub Container Registry at
+`ghcr.io/carcuevas/gotidal` and is built for `linux/amd64` and `linux/arm64`.
 
 ---
 
@@ -36,7 +36,7 @@ The same output is visible inside a running container — no extra flags needed,
 `/proc` is already mounted:
 
 ```bash
-docker run --rm --device /dev/snd carcuevas/gotidal:latest cat /proc/asound/cards
+docker run --rm --device /dev/snd ghcr.io/carcuevas/gotidal:latest cat /proc/asound/cards
 ```
 
 ---
@@ -83,7 +83,7 @@ docker run -it --rm \
   --group-add $(getent group audio | cut -d: -f3) \
   -v ~/.config/gotidal:/root/.config/gotidal \
   -v ~/.local/share/gotidal:/root/.local/share/gotidal \
-  carcuevas/gotidal:latest
+  ghcr.io/carcuevas/gotidal:latest
 ```
 
 ### Headless daemon
@@ -96,7 +96,7 @@ docker run -d \
   --group-add $(getent group audio | cut -d: -f3) \
   -v ~/.config/gotidal:/root/.config/gotidal \
   -v ~/.local/share/gotidal:/root/.local/share/gotidal \
-  carcuevas/gotidal:latest daemon
+  ghcr.io/carcuevas/gotidal:latest daemon
 ```
 
 Then attach the TUI from any terminal on the host:
@@ -119,7 +119,7 @@ docker run -d \
   -v ~/.local/share/gotidal:/root/.local/share/gotidal \
   -v /run/user/$(id -u)/bus:/run/user/1000/bus \
   -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-  carcuevas/gotidal:latest daemon
+  ghcr.io/carcuevas/gotidal:latest daemon
 ```
 
 ---
@@ -136,7 +136,7 @@ docker run -it --rm \
   -v ~/.config/gotidal:/root/.config/gotidal \
   -v ~/.local/share/gotidal:/root/.local/share/gotidal \
   -e GOTIDAL_DEBUG=true \
-  carcuevas/gotidal:latest
+  ghcr.io/carcuevas/gotidal:latest
 ```
 
 See [debugging.md](debugging.md) for more detail.

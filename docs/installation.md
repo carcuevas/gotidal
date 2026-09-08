@@ -53,10 +53,11 @@ sudo install -Dm755 gotidal-linux-amd64 /usr/local/bin/gotidal
 
 ## Docker
 
-The official image is published to Docker Hub at `carcuevas/gotidal`:
+The official image is published to the GitHub Container Registry at
+`ghcr.io/carcuevas/gotidal`:
 
 ```bash
-docker pull carcuevas/gotidal:latest
+docker pull ghcr.io/carcuevas/gotidal:latest
 ```
 
 See [docker.md](docker.md) for full usage instructions, including how to expose

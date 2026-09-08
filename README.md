@@ -19,7 +19,7 @@ All three modes share the same playback engine. The daemon holds exclusive acces
 ## Install
 
 Pre-built packages are available on the [releases page](https://github.com/carcuevas/gotidal/releases).
-The official Docker image is available at [`carcuevas/gotidal`](https://hub.docker.com/r/carcuevas/gotidal) — see [docs/docker.md](docs/docker.md) for usage.
+The official Docker image is available at [`ghcr.io/carcuevas/gotidal`](https://github.com/carcuevas/gotidal/pkgs/container/gotidal) — see [docs/docker.md](docs/docker.md) for usage.
 
 ### Arch Linux
 

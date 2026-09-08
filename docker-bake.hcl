@@ -54,7 +54,7 @@ target "fedora" {
   }]
 }
 
-# ── Docker image (pushed to Docker Hub) ──────────────────────────────────────
+# ── Docker image (pushed to GitHub Container Registry) ───────────────────────
 # Not part of the default group; invoked explicitly in CI via:
 #   DOCKER_TAG=v3.x.x docker buildx bake docker --push
 target "docker" {
@@ -65,7 +65,7 @@ target "docker" {
   }
   platforms = ["linux/amd64", "linux/arm64"]
   tags = [
-    "benehiko/gotidal:${DOCKER_TAG}",
-    "benehiko/gotidal:latest",
+    "ghcr.io/carcuevas/gotidal:${DOCKER_TAG}",
+    "ghcr.io/carcuevas/gotidal:latest",
   ]
 }
