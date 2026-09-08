@@ -4,14 +4,43 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 1.0.1, no leading v)'
+        required: true
 
 permissions:
   contents: write
 
 jobs:
+  # ── Resolve the version/tag once, regardless of trigger ──────────────────
+  # A tag push already carries the version in github.ref_name; a manual
+  # workflow_dispatch run instead carries it in the version input. Every
+  # other job reads from here so neither trigger needs special-casing
+  # downstream.
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      tag: ${{ steps.vars.outputs.tag }}
+    steps:
+      - name: Resolve version and tag
+        id: vars
+        run: |
+          RAW="${{ github.event.inputs.version }}"
+          if [ -z "$RAW" ]; then
+            RAW="${{ github.ref_name }}"
+          fi
+          VERSION="${RAW#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
   # ── Raw binaries (amd64 + arm64) ─────────────────────────────────────────
   binary:
     name: Build binary linux/${{ matrix.goarch }}
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -40,7 +69,7 @@ jobs:
         run: bash packaging/build-static-ffmpeg.sh /tmp/gotidal-ffmpeg-static
 
       - name: Build
-        run: go build -tags staticav -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o gotidal-linux-${{ matrix.goarch }} ./cmd/gotidal
+        run: go build -tags staticav -ldflags="-s -w -X main.version=${{ needs.prepare.outputs.tag }}" -o gotidal-linux-${{ matrix.goarch }} ./cmd/gotidal
 
       - uses: actions/upload-artifact@v5
         with:
@@ -50,6 +79,7 @@ jobs:
   # ── Docker image (carcuevas/gotidal) ───────────────────────────────────────
   docker:
     name: Push Docker image
+    needs: prepare
     runs-on: ubuntu-latest
 
     steps:
@@ -69,15 +99,15 @@ jobs:
 
       - name: Build and push
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          DOCKER_TAG="${GITHUB_REF_NAME}" docker buildx bake docker \
+          DOCKER_TAG="${{ needs.prepare.outputs.tag }}" docker buildx bake docker \
             --file docker-bake.hcl \
-            --set "*.args.VERSION=${VERSION}" \
+            --set "*.args.VERSION=${{ needs.prepare.outputs.version }}" \
             --push
 
   # ── Distro packages via docker bake ──────────────────────────────────────
   packages:
     name: Build distro packages
+    needs: prepare
     runs-on: ubuntu-latest
 
     steps:
@@ -97,10 +127,9 @@ jobs:
 
       - name: Build packages
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           docker buildx bake \
             --file docker-bake.hcl \
-            --set "*.args.VERSION=${VERSION}" \
+            --set "*.args.VERSION=${{ needs.prepare.outputs.version }}" \
             --set "*.output=type=local,dest=dist"
 
       - name: Flatten platform subdirectories
@@ -115,7 +144,7 @@ jobs:
   release:
     name: Publish release
     runs-on: ubuntu-latest
-    needs: [binary, packages, docker]
+    needs: [prepare, binary, packages, docker]
 
     steps:
       - uses: actions/download-artifact@v5
@@ -135,7 +164,7 @@ jobs:
         run: |
           CHANGELOG=$(gh api repos/${{ github.repository }}/releases/generate-notes \
             --method POST \
-            --field tag_name=${{ github.ref_name }} \
+            --field tag_name=${{ needs.prepare.outputs.tag }} \
             --jq '.body')
 
           printf '%s\n' '## Checksums (SHA-256)' > release_body.md
@@ -163,5 +192,7 @@ jobs:
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           body_path: release_body.md
