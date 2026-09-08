@@ -1,6 +1,6 @@
 ![gotidal TUI](docs/tui.png)
 
-**goTidal** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling. (A small number of USB interfaces expose a fixed native format and cannot be driven this way; see [fixed-format audio interfaces](#fixed-format-audio-interfaces).)
+**goTidal** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC by default — no PipeWire, no PulseAudio, no resampling. No DAC? A PipeWire mode is one toggle away (Settings tab or command palette), trading bit-perfectness for playback through whatever output PipeWire already manages — laptop speakers, HDMI, Bluetooth. (A small number of USB interfaces expose a fixed native format and cannot be driven bit-perfect either way; see [fixed-format audio interfaces](#fixed-format-audio-interfaces).)
 
 It is built on top of the Tidal API and can run in three ways:
 
@@ -10,7 +10,7 @@ It is built on top of the Tidal API and can run in three ways:
 
 All three modes share the same playback engine. The daemon holds exclusive access to the audio device only while a track is actually playing — releasing it on pause so other applications can use it freely.
 
-> 100% vibe coded with [Claude](https://claude.ai) and [Gemini](https://gemini.google.com).
+> 100% vibe coded with [Claude](https://claude.ai) and [Gemini](https://gemini.google.com) — grown out of an earlier player called tidalt, renamed and extended into goTidal.
 
 **Linux only.** Requires a Tidal HiFi or HiFi Plus subscription.
 
@@ -111,7 +111,7 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 - Artist view — browse an artist's full discography and play everything, their top tracks, or a single album
 - Song radio — build a queue of similar tracks for any song
 - Shuffle toggle (`x`) plus a one-shot queue reshuffle (`X`)
-- Bit-perfect FLAC playback via direct ALSA `hw:` — bypasses PipeWire/PulseAudio entirely (see [fixed-format devices](#fixed-format-audio-interfaces))
+- Bit-perfect FLAC playback via direct ALSA `hw:`, bypassing PipeWire/PulseAudio entirely (see [fixed-format devices](#fixed-format-audio-interfaces)) — or toggle **PipeWire mode** (Settings tab / command palette) to play through any PipeWire-managed output instead, no DAC required
 - Auto-negotiates the best PCM format your DAC supports
 - Auto-advances through the queue; respects shuffle mode
 - Volume control and output device selection, both persisted between sessions
