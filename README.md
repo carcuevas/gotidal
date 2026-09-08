@@ -1,4 +1,4 @@
-![gotidal TUI](docs/tui.png)
+![gotidal TUI](docs/gotidal.png)
 
 **goTidal** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC by default — no PipeWire, no PulseAudio, no resampling. No DAC? A PipeWire mode is one toggle away (Settings tab or command palette), trading bit-perfectness for playback through whatever output PipeWire already manages — laptop speakers, HDMI, Bluetooth. (A small number of USB interfaces expose a fixed native format and cannot be driven bit-perfect either way; see [fixed-format audio interfaces](#fixed-format-audio-interfaces).)
 
