@@ -87,6 +87,13 @@ int av_open(av_decoder_t *d, void *opaque) {
 
     d->sample_rate = (uint32_t)d->codec_ctx->sample_rate;
     d->channels    = (uint8_t)d->codec_ctx->ch_layout.nb_channels;
+    // Read from st->codecpar, not d->codec_ctx: codecpar is populated by the
+    // demuxer during avformat_find_stream_info (from FLAC's STREAMINFO block,
+    // ffprobe's own source for this field) and is already valid here. Several
+    // decoders — FLAC included — only populate the equivalent codec_ctx field
+    // lazily as frames are decoded, which for this pipeline is too late: ALSA
+    // is opened, using this value, before the first frame is ever decoded.
+    d->bits_per_raw_sample = (uint8_t)st->codecpar->bits_per_raw_sample;
 
     // Estimate total samples from stream metadata.
     // nb_frames is a packet/frame count; multiply by frame_size to get PCM

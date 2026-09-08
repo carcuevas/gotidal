@@ -34,6 +34,10 @@ typedef struct {
     uint32_t          sample_rate;
     uint8_t           channels;
     int64_t           n_samples;   // total samples/channel; 0 if unknown
+    // Source bit depth from the container/codec (e.g. 16 or 24 for
+    // FLAC/ALAC), not the fixed S32LE output format av_read_samples
+    // produces. 0 for codecs with no fixed depth (e.g. AAC).
+    uint8_t           bits_per_raw_sample;
 } av_decoder_t;
 
 // av_open opens an AVFormatContext using a custom AVIO context that calls

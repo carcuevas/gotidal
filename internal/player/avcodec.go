@@ -18,9 +18,15 @@ import (
 
 // streamInfo holds the audio parameters of an opened stream.
 type streamInfo struct {
-	SampleRate    uint32
-	NChannels     uint8
-	BitsPerSample uint8 // always 32 (S32LE output from avcodec path)
+	SampleRate uint32
+	NChannels  uint8
+	// BitsPerSample is the source container/codec's bit depth (16 or 24 for
+	// FLAC/ALAC) — not the S32LE format av_read_samples always outputs — so
+	// the ALSA format-preference ladder in alsa.c and the UI's quality badge
+	// both see the real source depth. Falls back to 32 for codecs with no
+	// fixed depth (lossy AAC), which alsa.c treats the same as an explicit
+	// 32: try S32_LE only, no format-preference ladder to walk.
+	BitsPerSample uint8
 	NSamples      uint64
 }
 
@@ -169,10 +175,14 @@ func openStream(ctx context.Context, url string) (*http.Response, *audioStream, 
 		return nil, nil, err
 	}
 
+	bits := uint8(dec.d.bits_per_raw_sample)
+	if bits == 0 {
+		bits = 32
+	}
 	info := streamInfo{
 		SampleRate:    uint32(dec.d.sample_rate),
 		NChannels:     uint8(dec.d.channels),
-		BitsPerSample: 32,
+		BitsPerSample: bits,
 		NSamples:      uint64(dec.d.n_samples),
 	}
 	return resp, &audioStream{Info: info, decoder: dec}, nil

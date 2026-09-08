@@ -192,8 +192,7 @@ func (p *Player) SetInterTrackSilenceMs(ms uint32) { p.interTrackSilenceMs.Store
 func (p *Player) TapPCM() <-chan []byte { return p.pcmTapCh }
 
 // Format reports the current stream's sample rate and channel count (0/0
-// before any track has started). Bit depth is not included: avcodec always
-// decodes to S32LE, so it never varies.
+// before any track has started).
 func (p *Player) Format() (rate uint32, channels uint8) {
 	p.muInfo.RLock()
 	defer p.muInfo.RUnlock()
