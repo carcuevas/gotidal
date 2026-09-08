@@ -263,8 +263,24 @@ func (m *Model) quit() tea.Cmd {
 }
 
 // openDeviceSelect populates the device list and raises the device overlay.
+// In bit-perfect mode this lists ALSA DAC-class cards (today's behavior); in
+// PipeWire mode it instead lists PipeWire sinks — any output PipeWire
+// manages, not just a recognized DAC — since bit-perfect mode's D-Bus
+// reservation and raw hw: open would just fight PipeWire for the device on
+// most of those. See toggleBitPerfectMode.
 func (m *Model) openDeviceSelect() {
-	devs, err := player.ListDevices()
+	var devs []player.DeviceInfo
+	var err error
+	if m.bitPerfectMode {
+		devs, err = player.ListDevices()
+	} else {
+		devs, err = player.ListPipeWireSinks()
+		if err == nil {
+			if def, derr := player.DefaultPipeWireSink(); derr == nil {
+				m.currentDevice = def
+			}
+		}
+	}
 	if err != nil {
 		m.errText = err.Error()
 		return
@@ -613,6 +629,50 @@ func (m Model) toggleInterTrackSilence() (tea.Model, tea.Cmd) {
 	return m, toastClearCmd()
 }
 
+// toggleBitPerfectMode flips between bit-perfect ALSA hw: output (the
+// default — reserves and opens the DAC directly, so the device picker only
+// offers real DAC-class ALSA cards) and PipeWire mode (plays through
+// PipeWire's "default" PCM instead, unlocking every output PipeWire manages
+// — laptop speakers, HDMI, Bluetooth — at the cost of bit-perfectness, so
+// playback works even without a DAC connected); see Player.SetDACMode. Takes
+// effect starting with the next track, not the one currently playing.
+func (m Model) toggleBitPerfectMode() (tea.Model, tea.Cmd) {
+	if m.clientMode {
+		m.errText = "Not available in client mode — the daemon owns the player"
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+	m.bitPerfectMode = !m.bitPerfectMode
+	m.player.SetDACMode(m.bitPerfectMode)
+	_ = m.store.SaveBitPerfectMode(m.bitPerfectMode)
+	if m.bitPerfectMode {
+		m.toast = "Bit-perfect quality: ON (DAC) — applies to your next track"
+	} else {
+		m.toast = "Bit-perfect quality: OFF (PipeWire) — applies to your next track"
+	}
+	return m, toastClearCmd()
+}
+
+// toggleVisualizer switches the meter strip anchored under Lyrics between the
+// Cava spectrum (default — frequency content, requires the cava binary) and
+// the Peak meter (real signal level, no external dependency).
+func (m Model) toggleVisualizer() (tea.Model, tea.Cmd) {
+	if m.clientMode {
+		m.errText = "Not available in client mode — no local audio to meter"
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+	if m.showPeakMeter && m.cava == nil {
+		m.errText = "cava is not installed — only the Peak meter is available"
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+	m.showPeakMeter = !m.showPeakMeter
+	if m.showPeakMeter {
+		m.toast = "Meter: Peak"
+	} else {
+		m.toast = "Meter: Cava spectrum"
+	}
+	return m, toastClearCmd()
+}
+
 func (m *Model) cycleShuffle() {
 	if m.shuffleMode == ShuffleOff {
 		m.shuffleMode = ShuffleFisherYates
@@ -656,7 +716,7 @@ func (m Model) togglePlay() (tea.Model, tea.Cmd) {
 			return nil
 		}
 	}
-	if m.currentTrack == nil {
+	if m.currentTrack == nil || m.stopped {
 		if t := m.selectedTrack(); t != nil {
 			_ = m.store.CacheTrack(t.ID, *t)
 			cmd := m.playTrackCmd(*t)
@@ -688,6 +748,7 @@ func (m Model) stopPlayback() (tea.Model, tea.Cmd) {
 	}
 	_ = m.player.Seek(0)
 	m.isPlaying = false
+	m.stopped = true
 	m.currPos = 0
 	m.pushState()
 	return m, nil

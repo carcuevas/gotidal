@@ -171,6 +171,14 @@ type Model struct {
 	devices       []player.DeviceInfo
 	currentDevice string // hw device string, "" = auto-detect
 
+	// bitPerfectMode mirrors Player.SetDACMode: true (the default) opens the
+	// ALSA hw: device directly for bit-perfect output and restricts the
+	// device picker to ALSA cards; false plays through PipeWire's "default"
+	// PCM instead, and the device picker lists PipeWire sinks (any output
+	// PipeWire manages — laptop speakers, HDMI, Bluetooth — not just a
+	// recognized DAC) — see toggleBitPerfectMode in keys.go.
+	bitPerfectMode bool
+
 	// interTrackSilenceMs is the persisted inter-track silence gap (0 =
 	// gapless, the default) — see commandPalette's toggle entry and
 	// Player.SetInterTrackSilenceMs.
@@ -187,11 +195,19 @@ type Model struct {
 	bitPerfect   bool
 	volume       float64
 	isPlaying    bool
-	advancing    bool   // true while auto-advancing to next track; suppresses re-trigger
-	skipGen      uint64 // monotonic counter; incremented on every doPlayTrack call
-	progress     progress.Model
-	currPos      float64
-	duration     float64
+	// stopped is true after an explicit Stop, distinct from a plain Pause: it
+	// means the player is parked on currentTrack rather than genuinely paused
+	// mid-listen, so the next Play (togglePlay, a media key, or an MPRIS
+	// PlayPause) should start whatever is currently selected instead of just
+	// resuming currentTrack — otherwise selecting a different track after Stop
+	// and pressing Play silently replays the stopped track instead. Cleared by
+	// doPlayTrack, the single entry point every playback start funnels through.
+	stopped   bool
+	advancing bool   // true while auto-advancing to next track; suppresses re-trigger
+	skipGen   uint64 // monotonic counter; incremented on every doPlayTrack call
+	progress  progress.Model
+	currPos   float64
+	duration  float64
 
 	// barsTicking is true while the fast Cava-refresh tick is scheduled. It
 	// lapses when playback stops and is restarted by the 1s tick on resume, so
@@ -276,8 +292,25 @@ type Model struct {
 	// player/PCM to tap) and when the cava binary isn't installed; either way
 	// the Cava pane just shows its placeholder. cavaBars is the latest
 	// display-scaled (0-100) snapshot, refreshed on the fast bar tick.
+	// cavaTap/peakTap are this model's two subscriber channels fed by a single
+	// visualizer.Broadcast goroutine reading player.TapPCM() — the raw tap is
+	// single-consumer, so Cava and PeakMeter each need their own fed copy
+	// rather than racing to read the same channel.
 	cava     *visualizer.Cava
 	cavaBars []int
+	cavaTap  chan []byte
+
+	// Peak/VU meter: an alternative to the Cava spectrum, computed directly
+	// from the same decoded PCM (see internal/visualizer.PeakMeter) with no
+	// external dependency, so — unlike Cava — it works even when the cava
+	// binary isn't installed. peak is nil in client mode, same reasoning as
+	// cava. showPeakMeter selects which of the two renderMeterPane draws;
+	// it defaults to false (Cava spectrum) and is toggled via the command
+	// palette.
+	peak          *visualizer.PeakMeter
+	peakBars      []int
+	peakTap       chan []byte
+	showPeakMeter bool
 
 	// Synced-lyrics panel state for the currently displayed track.
 	lyricsState lyricsState
@@ -324,11 +357,15 @@ func (m Model) WithoutGraphics() Model {
 	m.sixelSupported = false
 	m.ttyOut = nil
 	m.headless = true
-	// The daemon has no Cava pane to draw into — disable it rather than
-	// spawning and feeding a subprocess nothing will ever display.
+	// The daemon has no Cava/Peak pane to draw into — disable both rather
+	// than doing work (a subprocess, PCM decoding) nothing will ever display.
 	if m.cava != nil {
 		m.cava.Stop()
 		m.cava = nil
+	}
+	if m.peak != nil {
+		m.peak.Stop()
+		m.peak = nil
 	}
 	return m
 }
@@ -356,6 +393,9 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 	interTrackSilenceMs, _ := s.LoadInterTrackSilenceMs()
 	p.SetInterTrackSilenceMs(interTrackSilenceMs)
 
+	bitPerfectMode, _ := s.LoadBitPerfectMode()
+	p.SetDACMode(bitPerfectMode)
+
 	var mprisCh <-chan mpris.Event
 	if srv != nil {
 		mprisCh = srv.Commands
@@ -363,10 +403,18 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 
 	themeName, palette, theme := loadTheme(s)
 
+	// player.TapPCM() is single-consumer; fan it out to Cava and PeakMeter's
+	// own subscriber channels so each gets every buffer independently instead
+	// of racing to read the same one (see the cavaTap/peakTap field docs).
+	cavaTap := make(chan []byte, 4)
+	peakTap := make(chan []byte, 4)
+	go visualizer.Broadcast(p.TapPCM(), cavaTap, peakTap)
+
 	var cava *visualizer.Cava
 	if visualizer.Available() {
 		cava = visualizer.New(numCavaBars)
 	}
+	peak := visualizer.NewPeakMeter()
 
 	return Model{
 		ctx:                 ctx,
@@ -378,6 +426,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		focusMain:           true,
 		volume:              vol,
 		currentDevice:       currentDevice,
+		bitPerfectMode:      bitPerfectMode,
 		interTrackSilenceMs: interTrackSilenceMs,
 		bitPerfect:          true,
 		progress:            progressWithTheme(theme, 40),
@@ -394,6 +443,9 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		palette:             palette,
 		theme:               theme,
 		cava:                cava,
+		cavaTap:             cavaTap,
+		peak:                peak,
+		peakTap:             peakTap,
 	}
 }
 
@@ -420,6 +472,8 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		p.SetDevice(dev)
 	}
 
+	bitPerfectMode, _ := s.LoadBitPerfectMode()
+
 	themeName, palette, theme := loadTheme(s)
 
 	return Model{
@@ -432,6 +486,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		focusMain:      true,
 		volume:         vol,
 		currentDevice:  currentDevice,
+		bitPerfectMode: bitPerfectMode,
 		bitPerfect:     true,
 		progress:       progressWithTheme(clientTint(palette).Theme(), 40),
 		favorites:      make(map[int]bool),
@@ -567,6 +622,7 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 	}
 	m.currentTrack = &track
 	m.isPlaying = true
+	m.stopped = false
 	m.skipGen++
 	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
 	m.restorePosition = 0
@@ -1051,6 +1107,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cava != nil {
 			m.cavaBars = m.cava.Bars(100)
 		}
+		if m.peak != nil {
+			m.peakBars = m.peak.Levels(100)
+		}
 		// This tick only needs to run while playing — when stopped there's
 		// nothing new to show and re-rendering ~30×/s is wasted work. Drop to
 		// the 1s logo tick when idle; the 1s tick restarts this one when
@@ -1076,11 +1135,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 			_ = m.store.SaveLastPosition(m.currPos)
 			m.pushState()
-			// Best-effort: (re)configure cava for the current stream's format.
-			// A no-op when it's already running with this rate/channels.
+			// Best-effort: (re)configure the meters for the current stream's
+			// format. A no-op when already running with this rate/channels.
+			rate, channels := m.player.Format()
 			if m.cava != nil {
-				rate, channels := m.player.Format()
-				m.cava.Configure(rate, channels, m.player.TapPCM())
+				m.cava.Configure(rate, channels, m.cavaTap)
+			}
+			if m.peak != nil {
+				m.peak.Configure(channels, m.peakTap)
 			}
 		}
 		cmds := []tea.Cmd{tickCmd()}
@@ -1443,8 +1505,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ev := mpris.Event(msg)
 		switch ev.Cmd {
 		case mpris.CmdPlayPause:
-			// If nothing is playing (restored session), start the cursor track.
-			if m.currentTrack == nil && len(m.tracks) > 0 {
+			// If nothing is playing (restored session), or the player was
+			// explicitly Stopped, start the cursor track instead of resuming
+			// whatever Stop parked — see togglePlay/stopPlayback in keys.go.
+			if (m.currentTrack == nil || m.stopped) && len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
 				_ = m.store.CacheTrack(track.ID, track)
 				return m, tea.Batch(m.playTrackCmd(track), listenMPRIS(m.mprisCh))

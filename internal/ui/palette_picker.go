@@ -9,9 +9,10 @@ import (
 )
 
 // settingsExtraRows is the number of selectable rows before the theme list in
-// the Settings tab: the output-device row and the CD-recorder silence-gap
-// row. m.themeCursor indexes across all of it (0=device, 1=gap, 2+=themes).
-const settingsExtraRows = 2
+// the Settings tab: the output-device row, the bit-perfect-quality row, and
+// the CD-recorder silence-gap row. m.themeCursor indexes across all of it
+// (0=device, 1=bit-perfect, 2=gap, 3+=themes).
+const settingsExtraRows = 3
 
 // updateSettings drives the Settings tab: j/k moves the cursor across the
 // device row, the silence-gap row, and the theme list (live-previewing while
@@ -71,14 +72,16 @@ func (m *Model) syncSettingsPreview() {
 }
 
 // activateSettingsRow runs whatever the cursor is on: opens the output-device
-// selector, toggles the CD-recorder silence gap, or applies the highlighted
-// theme.
+// selector, toggles bit-perfect quality, toggles the CD-recorder silence gap,
+// or applies the highlighted theme.
 func (m Model) activateSettingsRow() (tea.Model, tea.Cmd) {
 	switch m.themeCursor {
 	case 0:
 		m.openDeviceSelect()
 		return m, nil
 	case 1:
+		return m.toggleBitPerfectMode()
+	case 2:
 		return m.toggleInterTrackSilence()
 	default:
 		m.applyTheme(paletteOrder[m.themeCursor-settingsExtraRows])
@@ -132,9 +135,9 @@ func renderSettingsActionRow(t Theme, w int, icon, label, value string, selected
 }
 
 // renderThemePicker renders the Settings tab: the output-device row, the
-// CD-recorder silence-gap row, then the theme picker. The active scheme is
-// marked, the cursor row uses the cyan band, and a "live preview" hint shows
-// while it's on a theme row.
+// bit-perfect-quality row, the CD-recorder silence-gap row, then the theme
+// picker. The active scheme is marked, the cursor row uses the cyan band,
+// and a "live preview" hint shows while it's on a theme row.
 func (m *Model) renderThemePicker(t Theme, w, h int) string {
 	innerW := max(w-2, 1)
 	rows := make([]string, 0, len(paletteOrder)+settingsExtraRows+4)
@@ -150,12 +153,21 @@ func (m *Model) renderThemePicker(t Theme, w, h int) string {
 		cursorRow = len(rows) - 1
 	}
 
+	bitPerfectLabel := "Off (PipeWire)"
+	if m.bitPerfectMode {
+		bitPerfectLabel = "On (DAC)"
+	}
+	rows = append(rows, renderSettingsActionRow(t, innerW, "◆", "Bit-perfect quality", bitPerfectLabel, m.themeCursor == 1))
+	if m.themeCursor == 1 {
+		cursorRow = len(rows) - 1
+	}
+
 	gapLabel := "Off (gapless)"
 	if m.interTrackSilenceMs > 0 {
 		gapLabel = fmt.Sprintf("On (%.1fs)", float64(m.interTrackSilenceMs)/1000)
 	}
-	rows = append(rows, renderSettingsActionRow(t, innerW, "◼", "CD-recorder silence gap", gapLabel, m.themeCursor == 1))
-	if m.themeCursor == 1 {
+	rows = append(rows, renderSettingsActionRow(t, innerW, "◼", "CD-recorder silence gap", gapLabel, m.themeCursor == 2))
+	if m.themeCursor == 2 {
 		cursorRow = len(rows) - 1
 	}
 
