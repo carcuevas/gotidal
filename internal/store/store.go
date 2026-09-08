@@ -440,6 +440,45 @@ func (s *SecretsStore) LoadBitPerfectMode() (bool, error) {
 	return on, err
 }
 
+// SaveLowDataMode persists whether playback forces PipeWire output and a
+// lossy stream request to save bandwidth (see Model.lowDataMode). Off by
+// default.
+func (s *SecretsStore) SaveLowDataMode(on bool) error {
+	if s.db == nil {
+		return nil
+	}
+	v := "0"
+	if on {
+		v = "1"
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		return b.Put([]byte("lowDataMode"), []byte(v))
+	})
+}
+
+// LoadLowDataMode returns the persisted low-data setting, defaulting to false
+// (off) when nothing has been saved yet.
+func (s *SecretsStore) LoadLowDataMode() (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	on := false
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("lowDataMode"))
+		on = v != nil && string(v) == "1"
+		return nil
+	})
+	return on, err
+}
+
 // SaveTheme persists the selected color-scheme name (a key into the UI's
 // palette registry) so the chosen theme survives across launches.
 func (s *SecretsStore) SaveTheme(name string) error {

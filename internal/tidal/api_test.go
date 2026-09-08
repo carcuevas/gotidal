@@ -196,7 +196,7 @@ func TestGetStreamURL_FirstQualitySucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestGetStreamURL_FallsBackThroughQualities(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestGetStreamURL_AllQualitiesFail(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
+	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
 	if err == nil {
 		t.Fatal("expected error when all qualities fail")
 	}
@@ -251,9 +251,34 @@ func TestGetStreamURL_EmptyURLs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
+	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
 	if err == nil {
 		t.Fatal("expected error for empty URLs in response")
+	}
+}
+
+func TestGetStreamURL_LowDataSkipsLosslessTiers(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("audioquality")
+		seen = append(seen, q)
+		if q == "HIGH" {
+			respond(w, 200, tidal.StreamResponse{URLs: []string{"https://cdn.tidal.com/high.m4a"}})
+			return
+		}
+		respond(w, 404, map[string]string{"error": "not found"})
+	}))
+	defer srv.Close()
+
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.URL != "https://cdn.tidal.com/high.m4a" {
+		t.Errorf("unexpected URL: %s", info.URL)
+	}
+	if len(seen) != 1 || seen[0] != "HIGH" {
+		t.Errorf("expected only HIGH to be tried, got %v", seen)
 	}
 }
 

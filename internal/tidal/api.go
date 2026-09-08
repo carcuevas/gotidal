@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/carcuevas/gotidal/internal/logger"
 )
 
 // ErrNotFound is returned by GetTrack when the API responds with 404.
@@ -251,6 +253,12 @@ const (
 // qualityLadder is the descending preference order tried by GetStreamURL.
 var qualityLadder = []Quality{QualityHiRes, QualityLossless, QualityHigh, QualityLow}
 
+// lowDataQualityLadder is tried instead of qualityLadder when GetStreamURL's
+// lowData argument is true — skips straight past the lossless FLAC tiers to
+// lossy AAC, for a hotspot/metered-connection toggle where bandwidth matters
+// more than bit-perfectness.
+var lowDataQualityLadder = []Quality{QualityHigh, QualityLow}
+
 // qualityLabels maps each tier to its short display label.
 var qualityLabels = map[Quality]string{
 	QualityHiRes:    "hi-res",
@@ -279,14 +287,33 @@ type StreamInfo struct {
 	Quality Quality // the tier that was actually granted
 }
 
-func (c *Client) GetStreamURL(ctx context.Context, trackID int) (StreamInfo, error) {
+// GetStreamURL resolves the stream URL for trackID, walking qualityLadder
+// (HI_RES_LOSSLESS down to LOW) top to bottom and returning the first tier
+// Tidal grants. lowData selects lowDataQualityLadder instead — HIGH then LOW
+// only, skipping both lossless FLAC tiers — for a metered-connection toggle
+// where bandwidth matters more than bit-perfectness.
+func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (StreamInfo, error) {
+	ladder := qualityLadder
+	if lowData {
+		ladder = lowDataQualityLadder
+	}
+
 	var lastErr error
 
-	for _, q := range qualityLadder {
+	for _, q := range ladder {
 		info, err := c.streamURLForQuality(ctx, trackID, q)
 		if err != nil {
+			// Logged rather than surfaced: a higher tier failing and falling
+			// back to a lower one is normal (account entitlement, or no
+			// hi-res master for this track) and lastErr is discarded the
+			// moment any tier succeeds, so this debug line is the only way
+			// to see *why* a track played below the top of the ladder.
+			logger.L.Debug("stream tier unavailable, trying next", "trackID", trackID, "quality", q, "err", err)
 			lastErr = err
 			continue
+		}
+		if q != ladder[0] {
+			logger.L.Debug("granted stream tier below the top of the ladder", "trackID", trackID, "quality", q, "requested", ladder[0])
 		}
 		return info, nil
 	}
