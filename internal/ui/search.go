@@ -17,6 +17,7 @@ const (
 	rowTrack searchRowKind = iota
 	rowArtist
 	rowAlbum
+	rowPlaylist
 )
 
 // searchRow is one selectable row in the flattened grouped-results list.
@@ -26,18 +27,23 @@ type searchRow struct {
 }
 
 // searchRows flattens the grouped results into the navigable order shown on
-// screen: Songs, then Artists, then Albums. (The "Top result" is the first
-// track and is rendered specially but maps to the same row.)
+// screen: Songs, then Artists, then Albums, then Playlists. (The "Top
+// result" is the first track and is rendered specially but maps to the same
+// row.)
 func (m *Model) searchRows() []searchRow {
-	rows := make([]searchRow, 0, len(m.searchResults.Tracks)+len(m.searchResults.Artists)+len(m.searchResults.Albums))
-	for i := range m.searchResults.Tracks {
+	res := m.searchResults
+	rows := make([]searchRow, 0, len(res.Tracks)+len(res.Artists)+len(res.Albums)+len(res.Playlists))
+	for i := range res.Tracks {
 		rows = append(rows, searchRow{rowTrack, i})
 	}
-	for i := range m.searchResults.Artists {
+	for i := range res.Artists {
 		rows = append(rows, searchRow{rowArtist, i})
 	}
-	for i := range m.searchResults.Albums {
+	for i := range res.Albums {
 		rows = append(rows, searchRow{rowAlbum, i})
+	}
+	for i := range res.Playlists {
+		rows = append(rows, searchRow{rowPlaylist, i})
 	}
 	return rows
 }
@@ -110,9 +116,16 @@ func (m Model) updateSearchKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput, cmd = m.searchInput.Update(k)
 		return m, cmd
 	}
+	row, ok := m.selectedSearchRow()
 	// Track-level shortcuts (o/f/r/a/space/…) when a track row is selected.
-	if row, ok := m.selectedSearchRow(); ok && row.kind == rowTrack {
+	if ok && row.kind == rowTrack {
 		return m.commonKeys(k)
+	}
+	// "a" on a playlist row adds the whole playlist to the queue — see
+	// enqueuePlaylistCmd. Distinct from the track-level "a" above since a
+	// playlist row has no single track for commonKeys' selectedTrack to find.
+	if ok && row.kind == rowPlaylist && k.String() == "a" {
+		return m, m.enqueuePlaylistCmd(m.searchResults.Playlists[row.idx])
 	}
 	return m, nil
 }
@@ -135,6 +148,9 @@ func (m Model) activateSearchRow() (tea.Model, tea.Cmd) {
 		return m.openArtistByID(a.ID, a.Name)
 	case rowAlbum:
 		cmd := m.openAlbum(m.searchResults.Albums[row.idx].ID)
+		return m, cmd
+	case rowPlaylist:
+		cmd := m.enqueuePlaylistCmd(m.searchResults.Playlists[row.idx])
 		return m, cmd
 	}
 	return m, nil
@@ -203,6 +219,14 @@ func (m *Model) renderSearchPane(t Theme, w, h int) string {
 					meta = a.ReleaseDate[:4] + " · " + meta
 				}
 				rows = append(rows, searchSimpleRow(t, "⊞", a.Title, meta, innerW, cursorAt(rowAlbum, i)))
+			}
+		}
+		if len(res.Playlists) > 0 {
+			addGroup("PLAYLISTS")
+			for i := range res.Playlists {
+				p := res.Playlists[i]
+				meta := strconv.Itoa(p.NumberOfTracks) + " tracks"
+				rows = append(rows, searchSimpleRow(t, "☰", p.Title, meta, innerW, cursorAt(rowPlaylist, i)))
 			}
 		}
 	}

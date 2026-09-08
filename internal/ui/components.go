@@ -123,13 +123,26 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 
 	badge := ""
 	if q := m.currentQuality.Label(); q != "" {
-		// When the plughw: fallback engaged, ALSA is resampling/remixing, so
-		// the granted tier no longer describes what reaches the DAC. Mark the
-		// badge rather than letting it assert untouched output.
-		if !m.bitPerfect {
+		style := t.RowFaint
+		switch {
+		case m.currentQuality == tidal.QualityHigh || m.currentQuality == tidal.QualityLow:
+			// HIGH/LOW are lossy AAC tiers — nothing was "converted" away
+			// from bit-perfect, they were never bit-perfect to begin with
+			// (granted directly by Tidal, e.g. under Data Saver). Styled like
+			// an error/warning (t.Err — themed red/rose) rather than the
+			// faint style every other badge state uses, so a lossy stream is
+			// something you'd actually notice at a glance, not read past.
+			q += " (lossy)"
+			style = t.Err
+		case !m.bitPerfect:
+			// A LOSSLESS/HI_RES_LOSSLESS tier that isn't reaching the DAC
+			// untouched — either the plughw: fallback engaged, or PipeWire
+			// mode is in effect (PipeWire's own graph may still resample or
+			// mix downstream). Mark the badge rather than letting it assert
+			// untouched output.
 			q += " (converted)"
 		}
-		badge = t.RowFaint.Render(q)
+		badge = style.Render(q)
 	}
 	artistRoom := max(inner-lipgloss.Width(badge)-1, 1)
 	artist := t.RowDim.Render(truncateStr(m.currentTrack.Artist.Name, artistRoom))

@@ -28,6 +28,13 @@ type (
 		title  string
 		tracks []tidal.Track
 	}
+	// enqueuePlaylistMsg carries a playlist's tracks to append to the live
+	// queue in one shot — pressing "a" on a playlist row (Playlists tab or
+	// Search) rather than drilling in first. See enqueuePlaylistCmd.
+	enqueuePlaylistMsg struct {
+		title  string
+		tracks []tidal.Track
+	}
 	openURLTracksMsg  []tidal.Track // tracks resolved from a startup tidal:// URL
 	cachedPlaylistMsg []tidal.Track // playlist restored from bbolt on startup
 	historyLoadedMsg  []tidal.Track // recently-played restored from bbolt on startup
@@ -71,6 +78,18 @@ type (
 	}
 	trackDoneMsg struct {
 		gen uint64
+	}
+	// nextTrackPrefetchedMsg carries a proactively-resolved stream for
+	// whichever track was next in the queue when maybePrefetchNext last
+	// fired — see that function, Model.prefetchedNextTrackID/Info, and
+	// trackDoneMsg. A resolve failure just means the prefetch cache stays
+	// empty (nil err field), so trackDoneMsg falls back to its normal
+	// on-demand resolve — not worth surfacing as a user-facing error for a
+	// background optimization.
+	nextTrackPrefetchedMsg struct {
+		trackID int
+		info    tidal.StreamInfo
+		gen     uint64
 	}
 	// skipErrMsg is returned when a track cannot be streamed (e.g. no FLAC
 	// available). It shows a transient error and auto-advances the queue.

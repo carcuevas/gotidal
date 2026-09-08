@@ -10,12 +10,20 @@ import (
 // beyond stereo (rare in a home listening chain) just gets its 1-based index.
 var peakChannelLabels = [...]string{"L", "R"}
 
-// renderPeakBars renders one vertical LED-ladder bar per channel, h rows
-// tall — a real VU/peak meter's rows are colored by fixed position (top
-// third red, next amber, rest green) and light up bottom-to-top as the
-// signal rises, rather than the whole bar changing color at once. An empty
-// levels slice (nothing playing yet, or client mode, where there's no local
-// PCM to meter) renders a dim placeholder instead, mirroring renderCavaBars.
+// peakBarThickness is how many screen rows tall each channel's horizontal bar
+// renders as (by simple repetition) — a single row read as too thin/flat;
+// this gives it real visual weight.
+const peakBarThickness = 2
+
+// renderPeakBars renders one horizontal LED-ladder bar per channel, each
+// peakBarThickness rows tall with a blank separator row between channels and
+// the whole block vertically centered in h — a real VU/peak meter's columns
+// are colored by fixed position (leftmost ~60% green/comfortable headroom,
+// next ~25% amber/hot, rightmost 15% red/clipping territory) and light up
+// left-to-right as the signal rises, rather than the whole bar changing
+// color at once. An empty levels slice (nothing playing yet, or client mode,
+// where there's no local PCM to meter) renders a dim placeholder instead,
+// mirroring renderCavaBars.
 func renderPeakBars(t Theme, levels []int, w, h int) string {
 	if w <= 0 || h <= 0 {
 		return ""
@@ -26,56 +34,60 @@ func renderPeakBars(t Theme, levels []int, w, h int) string {
 		return pad + msg
 	}
 
-	n := len(levels)
-	const gap = 1
-	barW := max((w-(n-1)*gap)/n, 1)
-
-	labels := make([]rune, n)
+	labels := make([]string, len(levels))
+	labelW := 0
 	for c := range levels {
 		if c < len(peakChannelLabels) {
-			labels[c] = rune(peakChannelLabels[c][0])
+			labels[c] = peakChannelLabels[c] + " "
 		} else {
-			labels[c] = rune('1' + c)
+			labels[c] = string(rune('1'+c)) + " "
 		}
+		labelW = max(labelW, lipgloss.Width(labels[c]))
 	}
+	barW := max(w-labelW, 1)
 
 	// Plain foreground-only styles: t.Toast/t.Err carry a border/bold meant for
 	// banner text, which would draw a box around every single bar cell here.
 	green := lipgloss.NewStyle().Foreground(t.P.Green)
 	red := lipgloss.NewStyle().Foreground(t.P.Rose)
 
-	lines := make([]string, h)
-	for r := range h {
-		rowFromBottom := h - 1 - r
-		frac := float64(rowFromBottom) / float64(max(h-1, 1))
-		litStyle := green // comfortable headroom
-		switch {
-		case frac >= 0.85:
-			litStyle = red // clipping territory
-		case frac >= 0.6:
-			litStyle = t.Amber // hot but not clipping (already foreground-only)
+	blank := strings.Repeat(" ", w)
+	lines := make([]string, 0, len(levels)*(peakBarThickness+1))
+	for c, lvl := range levels {
+		if c > 0 {
+			lines = append(lines, blank) // separator row between channels
 		}
-
+		filled := lvl * barW / 100
 		var sb strings.Builder
-		for c, lvl := range levels {
-			if c > 0 {
-				sb.WriteByte(' ')
+		sb.WriteString(t.RowDim.Render(labels[c]))
+		for col := range barW {
+			frac := float64(col) / float64(max(barW-1, 1))
+			litStyle := green // comfortable headroom
+			switch {
+			case frac >= 0.85:
+				litStyle = red // clipping territory
+			case frac >= 0.6:
+				litStyle = t.Amber // hot but not clipping (already foreground-only)
 			}
-			filled := lvl * h / 100
-			fillRune, style := '░', t.RowFaint
-			if rowFromBottom < filled {
-				fillRune, style = '█', litStyle
+			ch, style := '░', t.RowFaint
+			if col < filled {
+				ch, style = '█', litStyle
 			}
-			cell := make([]rune, barW)
-			for i := range cell {
-				cell[i] = fillRune
-			}
-			if r == h-1 {
-				cell[0] = labels[c]
-			}
-			sb.WriteString(style.Render(string(cell)))
+			sb.WriteString(style.Render(string(ch)))
 		}
-		lines[r] = sb.String()
+		line := sb.String()
+		for range peakBarThickness {
+			lines = append(lines, line)
+		}
 	}
-	return strings.Join(lines, "\n")
+
+	// Center the whole block vertically in h; fitBlock (the caller) pads any
+	// remainder below, so only the top needs padding here.
+	topPad := max((h-len(lines))/2, 0)
+	out := make([]string, 0, topPad+len(lines))
+	for range topPad {
+		out = append(out, blank)
+	}
+	out = append(out, lines...)
+	return strings.Join(out, "\n")
 }

@@ -55,6 +55,12 @@ func (m Model) updatePlaylists(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd := m.loadPlaylistDetail(pl)
 			return m, cmd
 		}
+	case "a":
+		// Add the whole playlist to the queue directly, without first
+		// drilling into its detail view — see enqueuePlaylistCmd.
+		if m.cursor >= 0 && m.cursor < len(m.playlists) {
+			return m, m.enqueuePlaylistCmd(m.playlists[m.cursor])
+		}
 	}
 	return m, nil
 }
@@ -91,6 +97,24 @@ func (m *Model) loadPlaylistDetail(pl tidal.Playlist) tea.Cmd {
 			return errMsg(err)
 		}
 		return playlistDetailMsg{uuid: uuid, title: title, tracks: tracks}
+	}
+}
+
+// enqueuePlaylistCmd fetches pl's tracks and appends them to the end of the
+// live queue in one shot (rmpc's AddAll for a whole playlist, not just its
+// visible/loaded tracks) — for pressing "a" on a playlist row directly,
+// without first drilling into its detail view.
+func (m *Model) enqueuePlaylistCmd(pl tidal.Playlist) tea.Cmd {
+	uuid := pl.UUID
+	title := pl.Title
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		tracks, err := client.GetPlaylistTracks(ctx, uuid)
+		if err != nil {
+			return errMsg(err)
+		}
+		return enqueuePlaylistMsg{title: title, tracks: tracks}
 	}
 }
 

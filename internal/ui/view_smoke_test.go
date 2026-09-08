@@ -185,6 +185,41 @@ func TestLibrarySectionsRender(t *testing.T) {
 	}
 }
 
+// TestMaybePrefetchNext verifies the proactive next-track prefetch only
+// fires within prefetchLeadSec of the current track ending, and only once
+// per upcoming track (not on every tick while it's still in flight/cached).
+func TestMaybePrefetchNext(t *testing.T) {
+	m := newSmokeModel()
+	m.cursor = 0
+	next := m.nextIndex()
+	if next < 0 {
+		t.Fatal("smoke model needs at least two tracks for this test")
+	}
+	wantID := m.tracks[next].ID
+
+	m.duration = 200
+	m.currPos = 150 // 50s remaining — well outside prefetchLeadSec
+	if cmd := m.maybePrefetchNext(); cmd != nil {
+		t.Errorf("should not prefetch before the lead time, got a non-nil cmd")
+	}
+	if m.prefetchedNextTrackID != 0 {
+		t.Errorf("should not have touched prefetchedNextTrackID yet, got %d", m.prefetchedNextTrackID)
+	}
+
+	m.currPos = 200 - prefetchLeadSec + 1 // just inside the lead time
+	cmd := m.maybePrefetchNext()
+	if cmd == nil {
+		t.Fatal("should prefetch once within the lead time")
+	}
+	if m.prefetchedNextTrackID != wantID {
+		t.Errorf("prefetchedNextTrackID = %d, want %d (the actual next track)", m.prefetchedNextTrackID, wantID)
+	}
+
+	if cmd := m.maybePrefetchNext(); cmd != nil {
+		t.Errorf("should not re-trigger a prefetch already cached/in flight for this track")
+	}
+}
+
 // TestQueueHybridStates checks the queue header reflects synced/edited/unsaved
 // origins and that an enqueue marks the queue dirty.
 func TestQueueHybridStates(t *testing.T) {
@@ -263,19 +298,72 @@ func TestGroupedSearch(t *testing.T) {
 	}
 }
 
-// TestThemePickerPreviewCommitRevert verifies the picker live-previews on
-// move, commits on Enter, and reverts on Esc.
+// TestSearchPlaylistRow verifies search results include a Playlists group and
+// that "a" on a playlist row triggers an enqueue command rather than being
+// silently ignored (playlists have no single track for commonKeys to find).
+func TestSearchPlaylistRow(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 100, 26
+	m.section = SecSearch
+	m.searchInput.Blur()
+	m.searchResults = tidal.SearchResults{
+		Tracks:    []tidal.Track{{ID: 1, Title: "King For A Day", Artist: tidal.Artist{Name: "PTV"}}},
+		Playlists: []tidal.Playlist{{UUID: "pl1", Title: "Warped Tour Essentials", NumberOfTracks: 40}},
+	}
+	out := stripANSI(m.renderSearchPane(m.theme, 80, 20))
+	for _, want := range []string{"PLAYLISTS", "Warped Tour Essentials"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("grouped search missing %q", want)
+		}
+	}
+
+	// Flattened order is tracks then playlists: index 1 is the playlist.
+	m.searchCursor = 1
+	res, cmd := m.updateSearchKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if cmd == nil {
+		t.Errorf("\"a\" on a playlist row should return an enqueue command")
+	}
+	if _, ok := res.(Model); !ok {
+		t.Fatalf("expected ui.Model, got %T", res)
+	}
+}
+
+// TestPlaylistTabEnqueueAll verifies "a" on the Playlists tab's list (not yet
+// drilled into a playlist's detail view) enqueues that playlist directly.
+func TestPlaylistTabEnqueueAll(t *testing.T) {
+	m := newSmokeModel()
+	m.section = SecPlaylists
+	m.detailFocus = false
+	m.playlists = []tidal.Playlist{{UUID: "p1", Title: "Late Night Drive", NumberOfTracks: 23}}
+	m.cursor = 0
+
+	res, cmd := m.updatePlaylists(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if cmd == nil {
+		t.Errorf("\"a\" on a playlist row should return an enqueue command")
+	}
+	if _, ok := res.(Model); !ok {
+		t.Fatalf("expected ui.Model, got %T", res)
+	}
+}
+
+// TestThemePickerPreviewCommitRevert verifies the floating Themes popup
+// live-previews on move, commits on Enter, and reverts on Esc.
 func TestThemePickerPreviewCommitRevert(t *testing.T) {
 	m := newSmokeModel()
 	m.width, m.height = 96, 24
 	m.section = SecSettings
 	m.enterSettings()
-	if paletteOrder[m.themeCursor-settingsExtraRows] != "gotidal" {
-		t.Fatalf("enterSettings should land on the active theme, got %q", paletteOrder[m.themeCursor-settingsExtraRows])
+	m.themeCursor = 4 // Themes row
+	m.openThemePicker()
+	if m.overlay != OverlayThemePicker {
+		t.Fatalf("openThemePicker should raise OverlayThemePicker, got %v", m.overlay)
+	}
+	if paletteOrder[m.themePickerIndex] != "gotidal" {
+		t.Fatalf("openThemePicker should land on the active theme, got %q", paletteOrder[m.themePickerIndex])
 	}
 
 	// Move down → live preview set, but committed theme unchanged.
-	res, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyDown})
+	res, _ := m.updateThemePickerOverlay(tea.KeyMsg{Type: tea.KeyDown})
 	m = asModel(t, res)
 	if m.previewPalette == nil {
 		t.Errorf("moving the cursor should set a live preview")
@@ -284,26 +372,31 @@ func TestThemePickerPreviewCommitRevert(t *testing.T) {
 		t.Errorf("preview must not commit the theme yet")
 	}
 
-	// Esc → revert.
-	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEsc})
+	// Esc → revert and close.
+	res, _ = m.updateThemePickerOverlay(tea.KeyMsg{Type: tea.KeyEsc})
 	m = asModel(t, res)
 	if m.previewPalette != nil {
 		t.Errorf("Esc should cancel the preview")
 	}
+	if m.overlay != OverlayNone {
+		t.Errorf("Esc should close the Themes popup")
+	}
 
-	// Move + Enter → commit.
-	m.section = SecSettings
-	m.focusMain = true
-	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyDown})
+	// Reopen, move + Enter → commit and close.
+	m.openThemePicker()
+	res, _ = m.updateThemePickerOverlay(tea.KeyMsg{Type: tea.KeyDown})
 	m = asModel(t, res)
-	committed := paletteOrder[m.themeCursor-settingsExtraRows]
-	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
+	committed := paletteOrder[m.themePickerIndex]
+	res, _ = m.updateThemePickerOverlay(tea.KeyMsg{Type: tea.KeyEnter})
 	m = asModel(t, res)
 	if m.themeName != committed {
 		t.Errorf("Enter should commit %q, got %q", committed, m.themeName)
 	}
 	if m.previewPalette != nil {
 		t.Errorf("commit should clear the preview")
+	}
+	if m.overlay != OverlayNone {
+		t.Errorf("Enter should close the Themes popup")
 	}
 }
 

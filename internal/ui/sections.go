@@ -104,7 +104,7 @@ func (m *Model) queueLayout(w, h int) queueGeom {
 		return g
 	}
 	g.showLeft = true
-	g.leftW = min(max(w/3, 28), 50)
+	g.leftW = min(max(w/3, 28), 60)
 	g.listW = w - g.leftW
 
 	innerW := max(g.leftW-2, 1)
@@ -123,7 +123,7 @@ func (m *Model) queueLayout(w, h int) queueGeom {
 	g.albumArtOuterH = g.albumArtRows + 2
 
 	remH := h - g.albumArtOuterH
-	if remH >= cavaOuterHeight+lyricsMinOuterH {
+	if !m.meterHidden && remH >= cavaOuterHeight+lyricsMinOuterH {
 		g.showCava = true
 		g.cavaOuterH = cavaOuterHeight
 		remH -= g.cavaOuterH

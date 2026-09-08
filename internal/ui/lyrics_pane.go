@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/carcuevas/gotidal/internal/lyrics"
 	"github.com/carcuevas/gotidal/internal/store"
@@ -85,14 +86,38 @@ func renderLyricsBody(t Theme, ls lyricsState, posSec float64, w, h int) string 
 		return t.RowDim.Render("No lyrics found.")
 	case len(ls.lines) > 0:
 		active := lyrics.ActiveIndex(ls.lines, posSec)
-		start, end := visibleWindow(max(active, 0), len(ls.lines), h)
+		// Wrap every line to the pane's width first (rather than truncating
+		// with "…") so a long line is never cut off — it just takes more
+		// screen rows. wrapRows tracks which original lyric line each
+		// resulting screen row belongs to, since one line can now span
+		// several; activeRowStart is the first screen row of the active
+		// line, so centering/highlighting operate on rows, not raw lines.
+		type wrapRow struct {
+			text    string
+			lineIdx int
+		}
+		var wrapped []wrapRow
+		activeRowStart := 0
+		for i, ln := range ls.lines {
+			if i == active {
+				activeRowStart = len(wrapped)
+			}
+			for _, wl := range wrapText(ln.Text, w) {
+				wrapped = append(wrapped, wrapRow{text: wl, lineIdx: i})
+			}
+		}
+		start, end := visibleWindow(activeRowStart, len(wrapped), h)
 		var rows []string
 		for i := start; i < end; i++ {
-			line := truncateStr(ls.lines[i].Text, w)
-			if i == active {
-				rows = append(rows, t.RowPlaying.Render(line))
+			r := wrapped[i]
+			if r.lineIdx == active {
+				// Width(w) so the highlight band fills the pane's full width,
+				// not just as wide as the text — matching every other
+				// selection-band row in the app (e.g. renderSettingsActionRow)
+				// rather than looking like a narrow color-only underline.
+				rows = append(rows, t.LyricsActive.Width(w).Render(r.text))
 			} else {
-				rows = append(rows, t.RowDim.Render(line))
+				rows = append(rows, t.RowDim.Render(r.text))
 			}
 		}
 		return strings.Join(rows, "\n")
@@ -107,4 +132,35 @@ func renderLyricsBody(t Theme, ls lyricsState, posSec float64, w, h int) string 
 	default:
 		return t.RowDim.Render("No lyrics found.")
 	}
+}
+
+// wrapText splits s into lines of at most w display columns, breaking at
+// word boundaries so a long lyric line spans multiple screen rows instead of
+// being cut off with truncateStr's "…". A single word wider than w on its
+// own (rare) is hard-truncated rather than left overflowing.
+func wrapText(s string, w int) []string {
+	if w < 1 {
+		return []string{s}
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	cur := words[0]
+	for _, word := range words[1:] {
+		if ansi.StringWidth(cur)+1+ansi.StringWidth(word) <= w {
+			cur += " " + word
+			continue
+		}
+		lines = append(lines, cur)
+		cur = word
+	}
+	lines = append(lines, cur)
+	for i, ln := range lines {
+		if ansi.StringWidth(ln) > w {
+			lines[i] = truncateStr(ln, w)
+		}
+	}
+	return lines
 }

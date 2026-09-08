@@ -100,6 +100,14 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		m.cycleTheme()
 		return nil, true
 
+	case "v":
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
+			return nil, false
+		}
+		nm, cmd := m.toggleVisualizer()
+		*m = nm.(Model) //nolint:forcetypeassert // toggleVisualizer always returns a Model
+		return cmd, true
+
 	case "ctrl+x":
 		if m.searchInput.Focused() || m.overlay != OverlayNone {
 			return nil, false
@@ -652,23 +660,61 @@ func (m Model) toggleBitPerfectMode() (tea.Model, tea.Cmd) {
 	return m, toastClearCmd()
 }
 
-// toggleVisualizer switches the meter strip anchored under Lyrics between the
-// Cava spectrum (default — frequency content, requires the cava binary) and
-// the Peak meter (real signal level, no external dependency).
+// toggleLowDataMode flips low-data mode: a single toggle for "I'm on a
+// hotspot/metered connection and away from my DAC" that forces PipeWire
+// output (like toggleBitPerfectMode's OFF state) and a lossy stream request
+// (see tidal.Client.GetStreamURL's lowData argument), instead of making
+// bandwidth and DAC-exclusivity two settings to remember separately.
+// Disabling it restores whatever bitPerfectMode was in effect just before
+// enabling, rather than leaving PipeWire forced on. Both effects apply
+// starting with the next track, not the one currently playing.
+func (m Model) toggleLowDataMode() (tea.Model, tea.Cmd) {
+	if m.clientMode {
+		m.errText = "Not available in client mode — the daemon owns the player"
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+	m.lowDataMode = !m.lowDataMode
+	if m.lowDataMode {
+		m.preLowDataBitPerfect = m.bitPerfectMode
+		m.bitPerfectMode = false
+		m.toast = "Data Saver: ON (PipeWire + lossy) — applies to your next track"
+	} else {
+		m.bitPerfectMode = m.preLowDataBitPerfect
+		m.toast = "Data Saver: OFF — applies to your next track"
+	}
+	m.player.SetDACMode(m.bitPerfectMode)
+	_ = m.store.SaveLowDataMode(m.lowDataMode)
+	_ = m.store.SaveBitPerfectMode(m.bitPerfectMode)
+	return m, toastClearCmd()
+}
+
+// toggleVisualizer cycles the meter strip anchored under Lyrics through Cava
+// spectrum (default — frequency content, requires the cava binary) → Peak
+// meter (real signal level, no external dependency) → hidden (gives that
+// space back to Lyrics — see queueLayout) → Cava spectrum again. Skips the
+// Cava state entirely when the cava binary isn't installed, cycling between
+// just Peak and hidden instead.
 func (m Model) toggleVisualizer() (tea.Model, tea.Cmd) {
 	if m.clientMode {
 		m.errText = "Not available in client mode — no local audio to meter"
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 	}
-	if m.showPeakMeter && m.cava == nil {
-		m.errText = "cava is not installed — only the Peak meter is available"
-		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
-	}
-	m.showPeakMeter = !m.showPeakMeter
-	if m.showPeakMeter {
+	switch {
+	case !m.meterHidden && !m.showPeakMeter: // Cava -> Peak
+		m.showPeakMeter = true
 		m.toast = "Meter: Peak"
-	} else {
-		m.toast = "Meter: Cava spectrum"
+	case !m.meterHidden && m.showPeakMeter: // Peak -> hidden
+		m.meterHidden = true
+		m.showPeakMeter = false
+		m.toast = "Meter: Off"
+	default: // hidden -> Cava, or Peak if cava isn't installed
+		m.meterHidden = false
+		if m.cava == nil {
+			m.showPeakMeter = true
+			m.toast = "Meter: Peak (cava not installed)"
+		} else {
+			m.toast = "Meter: Cava spectrum"
+		}
 	}
 	return m, toastClearCmd()
 }

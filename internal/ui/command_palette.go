@@ -66,6 +66,10 @@ func allPaletteItems() []paletteItem {
 			m.overlay = OverlayNone
 			return m.toggleVisualizer()
 		}},
+		paletteItem{icon: "◈", label: "Toggle Data Saver…", hint: "PipeWire + lossy", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+			m.overlay = OverlayNone
+			return m.toggleLowDataMode()
+		}},
 	)
 	for _, e := range tabEntries {
 		sec := e.section

@@ -59,6 +59,7 @@ const (
 	OverlayImportSpotify
 	OverlayHelp
 	OverlaySongInfo
+	OverlayThemePicker
 )
 
 //nolint:recvcheck // tea.Model requires value-receiver Init/Update/View; helper methods mutate via pointer receiver
@@ -100,9 +101,14 @@ type Model struct {
 	importCursor int
 	importError  string
 
-	// Theme picker (Settings section) cursor; previewPalette (below) holds the
-	// live-previewed scheme while the cursor moves.
-	themeCursor int
+	// themeCursor is the Settings tab's own row cursor (device, bit-perfect,
+	// Data Saver, silence gap, Themes — see settingsRowCount). themePickerIndex
+	// is the separate cursor within the floating Themes overlay (OverlayThemePicker,
+	// opened from the Themes row), indexing paletteOrder directly.
+	// previewPalette (below) holds the live-previewed scheme while either
+	// cursor moves.
+	themeCursor      int
+	themePickerIndex int
 
 	errText string // transient error shown in status bar; cleared after display
 
@@ -179,6 +185,17 @@ type Model struct {
 	// recognized DAC) — see toggleBitPerfectMode in keys.go.
 	bitPerfectMode bool
 
+	// lowDataMode forces PipeWire output and a lossy (HIGH, falling back to
+	// LOW) stream request instead of the normal quality ladder — a single
+	// toggle for "I'm on a hotspot/metered connection and away from my DAC",
+	// so bandwidth and DAC-exclusivity aren't two things to remember
+	// separately. preLowDataBitPerfect remembers bitPerfectMode from just
+	// before enabling it, so disabling restores whatever DAC/PipeWire choice
+	// was in effect before, rather than leaving PipeWire forced on. See
+	// toggleLowDataMode in keys.go.
+	lowDataMode          bool
+	preLowDataBitPerfect bool
+
 	// interTrackSilenceMs is the persisted inter-track silence gap (0 =
 	// gapless, the default) — see commandPalette's toggle entry and
 	// Player.SetInterTrackSilenceMs.
@@ -208,6 +225,17 @@ type Model struct {
 	progress  progress.Model
 	currPos   float64
 	duration  float64
+
+	// prefetchedNextTrackID/prefetchedNextInfo cache a stream proactively
+	// resolved by maybePrefetchNext once the current track is within
+	// prefetchLeadSec of ending, so trackDoneMsg can hand playbackLoop's
+	// gapless transition (see mpv.go) an already-known URL instead of racing
+	// a fresh GetStreamURL round-trip against its fixed 5-second handoff
+	// window — often too slow to land in time if only started once the
+	// current track has already finished. 0 until a prefetch completes (or
+	// after being consumed/invalidated — see doPlayTrack, trackDoneMsg).
+	prefetchedNextTrackID int
+	prefetchedNextInfo    tidal.StreamInfo
 
 	// barsTicking is true while the fast Cava-refresh tick is scheduled. It
 	// lapses when playback stops and is restarted by the 1s tick on resume, so
@@ -304,13 +332,16 @@ type Model struct {
 	// from the same decoded PCM (see internal/visualizer.PeakMeter) with no
 	// external dependency, so — unlike Cava — it works even when the cava
 	// binary isn't installed. peak is nil in client mode, same reasoning as
-	// cava. showPeakMeter selects which of the two renderMeterPane draws;
-	// it defaults to false (Cava spectrum) and is toggled via the command
-	// palette.
+	// cava. showPeakMeter selects which of the two renderMeterPane draws when
+	// a meter is shown at all; it defaults to false (Cava spectrum).
+	// meterHidden hides the meter strip entirely, giving that space back to
+	// Lyrics (see queueLayout). "v" (toggleVisualizer, also reachable via the
+	// command palette) cycles Cava spectrum → Peak meter → hidden → …
 	peak          *visualizer.PeakMeter
 	peakBars      []int
 	peakTap       chan []byte
 	showPeakMeter bool
+	meterHidden   bool
 
 	// Synced-lyrics panel state for the currently displayed track.
 	lyricsState lyricsState
@@ -395,6 +426,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 
 	bitPerfectMode, _ := s.LoadBitPerfectMode()
 	p.SetDACMode(bitPerfectMode)
+	lowDataMode, _ := s.LoadLowDataMode()
 
 	var mprisCh <-chan mpris.Event
 	if srv != nil {
@@ -427,6 +459,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		volume:              vol,
 		currentDevice:       currentDevice,
 		bitPerfectMode:      bitPerfectMode,
+		lowDataMode:         lowDataMode,
 		interTrackSilenceMs: interTrackSilenceMs,
 		bitPerfect:          true,
 		progress:            progressWithTheme(theme, 40),
@@ -473,6 +506,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 	}
 
 	bitPerfectMode, _ := s.LoadBitPerfectMode()
+	lowDataMode, _ := s.LoadLowDataMode()
 
 	themeName, palette, theme := loadTheme(s)
 
@@ -487,6 +521,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		volume:         vol,
 		currentDevice:  currentDevice,
 		bitPerfectMode: bitPerfectMode,
+		lowDataMode:    lowDataMode,
 		bitPerfect:     true,
 		progress:       progressWithTheme(clientTint(palette).Theme(), 40),
 		favorites:      make(map[int]bool),
@@ -577,21 +612,81 @@ func (m *Model) nextIndex() int {
 	}
 }
 
+// prefetchLeadSec is how far (in seconds) ahead of a track's natural end
+// maybePrefetchNext starts resolving the next track's stream — generously
+// ahead of playbackLoop's fixed 5-second post-EOF gapless handoff window
+// (see mpv.go), since the resolve itself (an API round-trip, sometimes
+// walking Tidal's quality ladder through more than one attempt) can easily
+// take longer than that window on its own if only started once the current
+// track has already finished.
+const prefetchLeadSec = 10.0
+
+// maybePrefetchNext proactively resolves the next queued track's stream once
+// the current one is within prefetchLeadSec of ending, caching it in
+// prefetchedNextTrackID/prefetchedNextInfo so trackDoneMsg can hand
+// playbackLoop's gapless transition an already-known URL instead of racing a
+// fresh GetStreamURL round-trip against its handoff window. No-op in client
+// mode (the daemon owns playback), with no next track, before the lead time,
+// or if this track has already been prefetched (or a prefetch for it is
+// already in flight).
+func (m *Model) maybePrefetchNext() tea.Cmd {
+	if m.clientMode || m.duration <= 0 || m.duration-m.currPos > prefetchLeadSec {
+		return nil
+	}
+	next := m.nextIndex()
+	if next < 0 {
+		return nil
+	}
+	track := m.tracks[next]
+	if track.ID == m.prefetchedNextTrackID {
+		return nil
+	}
+	m.prefetchedNextTrackID = track.ID
+	client := m.client
+	ctx := m.ctx
+	lowData := m.lowDataMode
+	gen := m.skipGen
+	trackID := track.ID
+	return func() tea.Msg {
+		info, err := client.GetStreamURL(ctx, trackID, lowData)
+		if err != nil {
+			logger.L.Debug("prefetch next track failed — trackDoneMsg will resolve it fresh instead", "trackID", trackID, "err", err)
+			return nil
+		}
+		return nextTrackPrefetchedMsg{trackID: trackID, info: info, gen: gen}
+	}
+}
+
 // playTrackCmd returns a tea.Cmd that starts playback of track.
 // In normal mode it streams via the local player and returns nowPlayingMsg.
 // In client mode it resolves the stream URL and forwards it to the parent
 // instance via MPRIS, then returns nil (no local playback state to track).
 func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
-	return m.doPlayTrack(track, m.player.Play)
+	return m.doPlayTrack(track, m.player.Play, nil)
 }
 
 // playNextTrackCmd is like playTrackCmd but uses PlayNext to transition
 // without closing the ALSA device, avoiding pops between playlist tracks.
+// Resolves the stream URL fresh — see playNextTrackFromPrefetchCmd for the
+// common case where maybePrefetchNext already resolved it in advance.
 func (m *Model) playNextTrackCmd(track tidal.Track) tea.Cmd {
-	return m.doPlayTrack(track, m.player.PlayNext)
+	return m.doPlayTrack(track, m.player.PlayNext, nil)
 }
 
-func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struct{}, error)) tea.Cmd {
+// playNextTrackFromPrefetchCmd is playNextTrackCmd with the stream already
+// resolved (by maybePrefetchNext, while the previous track was still
+// playing) — skips the GetStreamURL round-trip entirely, which is often too
+// slow to land within playbackLoop's fixed 5-second gapless handoff window
+// (see mpv.go) if only started once the previous track has already ended.
+func (m *Model) playNextTrackFromPrefetchCmd(track tidal.Track, info tidal.StreamInfo) tea.Cmd {
+	return m.doPlayTrack(track, m.player.PlayNext, &info)
+}
+
+// doPlayTrack starts playback of track via playFn (Play for a fresh start,
+// PlayNext for a gapless transition). prefetched, when non-nil, is an
+// already-resolved stream (see playNextTrackFromPrefetchCmd) that skips the
+// GetStreamURL round-trip; otherwise it's resolved here.
+func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struct{}, error), prefetched *tidal.StreamInfo) tea.Cmd {
 	if m.clientMode {
 		mc := m.mprisClient
 		if m.localPlaylist && len(m.tracks) > 0 {
@@ -627,10 +722,16 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
 	m.restorePosition = 0
 	m.currPos = 0
+	// This track is now "current" — any prefetch cached against it (see
+	// maybePrefetchNext) has just been consumed via prefetched above, or is
+	// stale/irrelevant if it wasn't. Either way it doesn't describe *this*
+	// track's own successor yet, so don't let it linger.
+	m.prefetchedNextTrackID = 0
 	_ = m.store.SaveLastTrackID(track.ID)
 	gen := m.skipGen
 	ctx := m.ctx
 	client := m.client
+	lowData := m.lowDataMode
 	return func() tea.Msg {
 		// Fetch fresh track metadata in parallel with the stream URL so we
 		// always have a cover UUID even when the cached entry predates cover support.
@@ -648,12 +749,19 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 			freshCh <- freshResult{&track, nil}
 		}
 
-		info, err := client.GetStreamURL(ctx, track.ID)
-		if err != nil {
-			logger.L.Error("GetStreamURL failed", "trackID", track.ID, "err", err)
-			return skipErrMsg{err: err, gen: gen}
+		var info tidal.StreamInfo
+		if prefetched != nil {
+			info = *prefetched
+			logger.L.Info("stream resolved (prefetched)", "trackID", track.ID, "ext", info.Ext, "quality", info.Quality)
+		} else {
+			var err error
+			info, err = client.GetStreamURL(ctx, track.ID, lowData)
+			if err != nil {
+				logger.L.Error("GetStreamURL failed", "trackID", track.ID, "err", err)
+				return skipErrMsg{err: err, gen: gen}
+			}
+			logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext, "quality", info.Quality)
 		}
-		logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext, "quality", info.Quality)
 		done, err := playFn(info.URL)
 		if err != nil {
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
@@ -1154,6 +1262,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.clientMode {
 			cmds = append(cmds, pollParentState(m.mprisClient))
 		}
+		if cmd := m.maybePrefetchNext(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		return m, tea.Batch(cmds...)
 
 	case parentStateMsg:
@@ -1277,6 +1388,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.playNextTrackCmd(msg.track)
 		return m, cmd
 
+	case nextTrackPrefetchedMsg:
+		if msg.gen != m.skipGen {
+			break // stale — a newer skip superseded the track we prefetched for
+		}
+		m.prefetchedNextTrackID = msg.trackID
+		m.prefetchedNextInfo = msg.info
+
 	case trackDoneMsg:
 		if msg.gen != m.skipGen {
 			break // stale — from a track that was already skipped past
@@ -1291,7 +1409,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currPos = 0
 				m.duration = 0
 				_ = m.store.CacheTrack(track.ID, track)
-				cmd := m.playNextTrackCmd(track)
+				// Use maybePrefetchNext's cached resolve when it's actually
+				// for this track — skips the GetStreamURL round-trip, which
+				// is often too slow to land within playbackLoop's fixed
+				// 5-second gapless handoff window if only started now, after
+				// the previous track has already ended. Falls back to the
+				// normal on-demand resolve otherwise (e.g. a short track the
+				// lead time never got a chance to fire for).
+				var cmd tea.Cmd
+				if track.ID == m.prefetchedNextTrackID {
+					cmd = m.playNextTrackFromPrefetchCmd(track, m.prefetchedNextInfo)
+				} else {
+					cmd = m.playNextTrackCmd(track)
+				}
 				return m, cmd
 			}
 			m.isPlaying = false
@@ -1460,6 +1590,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queueSource = "playlist:" + msg.name
 		m.queueDirty = false
 		m.toast = fmt.Sprintf("✓ Saved %q — %d tracks", msg.name, msg.count)
+		return m, toastClearCmd()
+
+	case enqueuePlaylistMsg:
+		for i := range msg.tracks {
+			m.enqueueEnd(msg.tracks[i])
+		}
+		m.toast = fmt.Sprintf("✓ Added %q — %d tracks to queue", msg.title, len(msg.tracks))
 		return m, toastClearCmd()
 
 	case spotifyResolvedMsg:
@@ -1667,6 +1804,21 @@ func (m *Model) syncKittyCover() {
 	defer ks.mu.Unlock()
 
 	col, row, panelW, imgRows, ok := m.coverBoxRect()
+	if ok {
+		// coverBoxDims sized panelW/imgRows assuming a fixed cellAspect
+		// (2.0); the terminal's real cell aspect ratio is rarely exactly
+		// that. Kitty's placement (kittyPlaceAt) stretches the transmitted
+		// square image to fill exactly panelW×imgRows cells, so passing it
+		// the assumed-square box as-is would visibly distort the cover on
+		// any terminal/font where the real ratio differs. Shrink to the
+		// largest true square in real pixels first — the same fix
+		// syncSixelCover already applies, just converted back to cell units
+		// since Kitty's placement is cell-based, not pixel-based.
+		cellW, cellH := cellPixelSize(m.ttyFd())
+		sidePx := min(float64(panelW)*cellW, float64(imgRows)*cellH)
+		panelW = max(int(sidePx/cellW), 1)
+		imgRows = max(int(sidePx/cellH), 1)
+	}
 	if !ok || !m.useKittyCover() {
 		// Cover should not be shown: clear it once, then stay quiet.
 		if ks.drawnKey != "" || ks.stale {
@@ -1772,6 +1924,7 @@ func (m *Model) syncSixelCover(forceRedraw bool) {
 	}
 
 	if ss.encodeKey != encodeKey {
+		logger.L.Debug("sixel cover encode", "cols", cols, "rows", rows, "cellW", cellW, "cellH", cellH, "pxW", pxW, "pxH", pxH)
 		ss.escape = sixelEncode(m.coverImage, pxW, pxH)
 		ss.encodeKey = encodeKey
 	}
@@ -1912,6 +2065,8 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 		popup = m.renderHelpOverlay(t)
 	case OverlaySongInfo:
 		popup = m.renderSongInfoOverlay(t)
+	case OverlayThemePicker:
+		popup = m.renderThemePickerOverlay(t)
 	default:
 		return base
 	}
@@ -1957,7 +2112,7 @@ func (m *Model) renderMain(t Theme, w, h int) string {
 	case SecHistory:
 		return m.renderHistoryPane(t, w, h)
 	case SecSettings:
-		return m.renderThemePicker(t, w, h)
+		return m.renderSettingsList(t, w, h)
 	default:
 		return renderPanel(t, sectionTitle(m.section), m.focusMain, w, h,
 			t.RowDim.Render("Coming soon."))

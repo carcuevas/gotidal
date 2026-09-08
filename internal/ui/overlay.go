@@ -31,6 +31,8 @@ func (m Model) updateOverlay(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateAddToPlaylist(k)
 	case OverlayImportSpotify:
 		return m.updateImportSpotify(k)
+	case OverlayThemePicker:
+		return m.updateThemePickerOverlay(k)
 	default: // OverlayHelp, OverlaySongInfo: Esc/any key closes
 		m.overlay = OverlayNone
 		return m, nil
@@ -66,6 +68,7 @@ func (m *Model) renderHelpOverlay(t Theme) string {
 		{"Ctrl+X", "Actions menu"},
 		{"Ctrl+S a", "Save queue as playlist"},
 		{"t", "Cycle theme"},
+		{"v", "Toggle meter: Peak / Cava spectrum"},
 		{": / Ctrl+P", "Command palette"},
 		{"/", "Search"},
 		{"q / Ctrl+C", "Quit"},
