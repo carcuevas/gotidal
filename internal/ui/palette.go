@@ -74,12 +74,16 @@ type Theme struct {
 	PanelTitleHot lipgloss.Style // focused panel title (cyan)
 
 	// List rows.
-	Row        lipgloss.Style // base row text
-	RowSel     lipgloss.Style // selected row band
-	RowPlaying lipgloss.Style // playing row title (cyan)
-	RowDim     lipgloss.Style // artist / metadata
-	RowFaint   lipgloss.Style // index, badge, dash
-	Fav        lipgloss.Style // favorite heart (rose)
+	Row          lipgloss.Style // base row text
+	RowSel       lipgloss.Style // selected row band
+	RowPlaying   lipgloss.Style // playing row title (cyan)
+	RowDim       lipgloss.Style // artist / metadata
+	RowFaint     lipgloss.Style // index, badge, dash
+	Fav          lipgloss.Style // favorite heart (rose)
+	LyricsActive lipgloss.Style // current synced-lyrics line: cyan text on the
+	// same subtle selection-band background as RowSel (BgSel), rather than a
+	// foreground-only color change — a plain color swap reads as barely
+	// different from the surrounding dim text on some themes/terminals.
 
 	// Sidebar.
 	SideGroup      lipgloss.Style // group label (NOW / LIBRARY / TIDAL)
@@ -141,12 +145,13 @@ func (p Palette) Theme() Theme {
 		PanelTitle:    lipgloss.NewStyle().Foreground(p.FgDim),
 		PanelTitleHot: lipgloss.NewStyle().Foreground(p.Cyan),
 
-		Row:        lipgloss.NewStyle().Foreground(p.Fg),
-		RowSel:     lipgloss.NewStyle().Foreground(p.Fg).Background(p.BgSel),
-		RowPlaying: lipgloss.NewStyle().Foreground(p.Cyan),
-		RowDim:     lipgloss.NewStyle().Foreground(p.FgDim),
-		RowFaint:   lipgloss.NewStyle().Foreground(p.FgFaint),
-		Fav:        lipgloss.NewStyle().Foreground(p.Rose),
+		Row:          lipgloss.NewStyle().Foreground(p.Fg),
+		RowSel:       lipgloss.NewStyle().Foreground(p.Fg).Background(p.BgSel),
+		RowPlaying:   lipgloss.NewStyle().Foreground(p.Cyan),
+		RowDim:       lipgloss.NewStyle().Foreground(p.FgDim),
+		RowFaint:     lipgloss.NewStyle().Foreground(p.FgFaint),
+		Fav:          lipgloss.NewStyle().Foreground(p.Rose),
+		LyricsActive: lipgloss.NewStyle().Foreground(p.Cyan).Background(p.BgSel),
 
 		SideGroup:      lipgloss.NewStyle().Foreground(p.FgFaint),
 		SideItem:       lipgloss.NewStyle().Foreground(p.Fg),

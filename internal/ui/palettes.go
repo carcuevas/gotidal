@@ -97,36 +97,70 @@ var paletteAmber = Palette{
 	OnAccent: c("#140e03"),
 }
 
+// paletteGoldenHour is a warm, multi-tonal gold/champagne scheme — distinct
+// from Amber CRT's monochrome single-hue phosphor look: a warm brown (not
+// near-black) ground, champagne text, and gold/bronze/copper/rose-gold
+// accents spread across the usual accent roles rather than one repeated hue.
+var paletteGoldenHour = Palette{
+	Bg: c("#1c1610"), Bg2: c("#241d14"), BgSel: c("#33280f"), BgModal: c("#16110b"),
+	Fg: c("#f0dcae"), FgDim: c("#b89860"), FgFaint: c("#7a6440"),
+	Cyan: c("#e8b64f"), CyanSoft: c("#f4d78a"), Teal: c("#d4af37"), Green: c("#b5a642"),
+	Purple: c("#b5654b"), Indigo: c("#c98a4b"), Amber: c("#ffb703"), Rose: c("#d98a6b"),
+	Border: c("#4a3a20"), BorderSoft: c("#362a16"), BorderAccent: c("#b8860b"),
+	ProgA: c("#d4af37"), ProgB: c("#ffd76a"),
+	Grad1: c("#f4d78a"), Grad2: c("#e8b64f"), Grad3: c("#d4af37"), Grad4: c("#b8860b"),
+	OnAccent: c("#201804"),
+}
+
+// paletteMistyForest is a soft, nature-inspired scheme meant to read as calm
+// rather than vibrant: a muted dark sage/forest ground (not a stark black),
+// warm cream text, and gentle sage-green/teal accents instead of a punchy
+// saturated hue — deliberately lower-contrast than the rest of the lineup.
+var paletteMistyForest = Palette{
+	Bg: c("#232a2b"), Bg2: c("#2a3335"), BgSel: c("#3a4547"), BgModal: c("#1c2223"),
+	Fg: c("#d3c6aa"), FgDim: c("#8a9a8b"), FgFaint: c("#5a6b5c"),
+	Cyan: c("#83c092"), CyanSoft: c("#a7c080"), Teal: c("#7fbbb3"), Green: c("#a7c080"),
+	Purple: c("#a68fb0"), Indigo: c("#7fbbb3"), Amber: c("#dbbc7f"), Rose: c("#e69875"),
+	Border: c("#3d484a"), BorderSoft: c("#333d3f"), BorderAccent: c("#83c092"),
+	ProgA: c("#83c092"), ProgB: c("#a7c080"),
+	Grad1: c("#a7c080"), Grad2: c("#83c092"), Grad3: c("#7fbbb3"), Grad4: c("#a68fb0"),
+	OnAccent: c("#1c2223"),
+}
+
 // palettes maps a scheme key to its Palette. "auto" is resolved lazily via
 // autoPalette() in resolvePalette so it can sample the terminal at call time.
 var palettes = map[string]Palette{
-	"gotidal":    paletteGoTidal,
-	"catppuccin": paletteCatppuccin,
-	"tokyonight": paletteTokyoNight,
-	"gruvbox":    paletteGruvbox,
-	"nord":       paletteNord,
-	"rosepine":   paletteRosePine,
-	"dracula":    paletteDracula,
-	"amber":      paletteAmber,
+	"gotidal":     paletteGoTidal,
+	"catppuccin":  paletteCatppuccin,
+	"tokyonight":  paletteTokyoNight,
+	"gruvbox":     paletteGruvbox,
+	"nord":        paletteNord,
+	"rosepine":    paletteRosePine,
+	"dracula":     paletteDracula,
+	"amber":       paletteAmber,
+	"goldenhour":  paletteGoldenHour,
+	"mistyforest": paletteMistyForest,
 }
 
 // paletteOrder is the picker's display order (and the cycle order for `t`).
 var paletteOrder = []string{
 	"auto", "gotidal", "catppuccin", "tokyonight",
-	"gruvbox", "nord", "rosepine", "dracula", "amber",
+	"gruvbox", "nord", "rosepine", "dracula", "amber", "goldenhour", "mistyforest",
 }
 
 // paletteNames maps a scheme key to its human-readable label (theme picker).
 var paletteNames = map[string]string{
-	"auto":       "Auto — match terminal",
-	"gotidal":    "goTidal",
-	"catppuccin": "Catppuccin Mocha",
-	"tokyonight": "Tokyo Night",
-	"gruvbox":    "Gruvbox Dark",
-	"nord":       "Nord",
-	"rosepine":   "Rosé Pine",
-	"dracula":    "Dracula",
-	"amber":      "Amber CRT",
+	"auto":        "Auto — match terminal",
+	"gotidal":     "goTidal",
+	"catppuccin":  "Catppuccin Mocha",
+	"tokyonight":  "Tokyo Night",
+	"gruvbox":     "Gruvbox Dark",
+	"nord":        "Nord",
+	"rosepine":    "Rosé Pine",
+	"dracula":     "Dracula",
+	"amber":       "Amber CRT",
+	"goldenhour":  "Golden Hour",
+	"mistyforest": "Misty Forest",
 }
 
 const defaultThemeName = "gotidal"
