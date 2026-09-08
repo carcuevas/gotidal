@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/carcuevas/gotidal/internal/player"
 	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
@@ -328,6 +329,15 @@ func (m Model) updateDeviceSelect(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentDevice = chosen.HWName
 		m.overlay = OverlayNone
 		m.cursor = 0
+		if !m.bitPerfectMode {
+			// A PipeWire sink switch is a local system-audio change, not a
+			// player command — it applies immediately regardless of client
+			// mode, and there's nothing to forward to a remote daemon for it.
+			if err := player.SetDefaultPipeWireSink(chosen.HWName); err != nil {
+				m.errText = err.Error()
+			}
+			return m, nil
+		}
 		if m.clientMode {
 			mc := m.mprisClient
 			return m, func() tea.Msg {
@@ -343,12 +353,19 @@ func (m Model) updateDeviceSelect(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// renderDeviceSelect renders the device-picker popup.
+// renderDeviceSelect renders the device-picker popup: ALSA DAC-class cards in
+// bit-perfect mode, PipeWire sinks otherwise (see toggleBitPerfectMode) — the
+// title names which one so it's never ambiguous which kind of device a row
+// picks.
 func (m *Model) renderDeviceSelect(t Theme) string {
 	w := min(max(m.width-12, 30), 70)
 	var rows []string
 	if len(m.devices) == 0 {
-		rows = append(rows, t.RowDim.Render("No playback devices found."))
+		noneMsg := "No playback devices found."
+		if !m.bitPerfectMode {
+			noneMsg = "No PipeWire sinks found — is pactl installed?"
+		}
+		rows = append(rows, t.RowDim.Render(noneMsg))
 	} else {
 		for i, d := range m.devices {
 			cur := "  "
@@ -369,7 +386,11 @@ func (m *Model) renderDeviceSelect(t Theme) string {
 	}
 	h := min(len(rows)+2, m.height-4)
 	body := strings.Join(rows, "\n")
-	return renderPanel(t, "SELECT DEVICE", true, w, max(h, 4), body)
+	title := "SELECT DAC"
+	if !m.bitPerfectMode {
+		title = "SELECT OUTPUT (PIPEWIRE)"
+	}
+	return renderPanel(t, title, true, w, max(h, 4), body)
 }
 
 // renderActionSheet renders the contextual action sheet popup. Its title is the

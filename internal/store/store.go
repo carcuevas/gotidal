@@ -397,6 +397,49 @@ func (s *SecretsStore) LoadInterTrackSilenceMs() (uint32, error) {
 	return ms, err
 }
 
+// SaveBitPerfectMode persists whether playback opens the ALSA hw: device
+// directly for bit-perfect output (true, the default) or instead opens the
+// ALSA "default" PCM — normally PipeWire's own plugin — so any output
+// PipeWire manages (laptop speakers, HDMI, Bluetooth, ...) is usable without
+// a recognized DAC connected, at the cost of bit-perfectness.
+func (s *SecretsStore) SaveBitPerfectMode(on bool) error {
+	if s.db == nil {
+		return nil
+	}
+	v := "1"
+	if !on {
+		v = "0"
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		return b.Put([]byte("bitPerfectMode"), []byte(v))
+	})
+}
+
+// LoadBitPerfectMode returns the persisted bit-perfect setting, defaulting to
+// true (on) when nothing has been saved yet.
+func (s *SecretsStore) LoadBitPerfectMode() (bool, error) {
+	if s.db == nil {
+		return true, nil
+	}
+	on := true
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("bitPerfectMode"))
+		if v != nil {
+			on = string(v) != "0"
+		}
+		return nil
+	})
+	return on, err
+}
+
 // SaveTheme persists the selected color-scheme name (a key into the UI's
 // palette registry) so the chosen theme survives across launches.
 func (s *SecretsStore) SaveTheme(name string) error {

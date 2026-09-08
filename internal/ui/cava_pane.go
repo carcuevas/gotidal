@@ -9,8 +9,11 @@ import (
 // numCavaBars is the fixed bar count cava is configured to emit. The render
 // side shows at most this many columns, one bar per column; a narrower panel
 // simply clips the tail rather than resampling, which is cheap and matches
-// how a real spectrum analyzer's bars look when the window is too small.
-const numCavaBars = 24
+// how a real spectrum analyzer's bars look when the window is too small. Set
+// high enough to fill the meter strip's full width (the whole Queue-list
+// column, not just the AlbumArt column it used to share) on typical terminal
+// widths rather than leaving most of it blank past bar 24.
+const numCavaBars = 80
 
 // renderCavaBars renders bars (each 0-100) as a column of block glyphs, h rows
 // tall, colored along the theme's gradient by row. An empty bars slice (cava

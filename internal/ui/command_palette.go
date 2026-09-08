@@ -62,6 +62,10 @@ func allPaletteItems() []paletteItem {
 			m.overlay = OverlayNone
 			return m.toggleInterTrackSilence()
 		}},
+		paletteItem{icon: "▮", label: "Toggle meter: Peak / Cava spectrum…", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+			m.overlay = OverlayNone
+			return m.toggleVisualizer()
+		}},
 	)
 	for _, e := range tabEntries {
 		sec := e.section

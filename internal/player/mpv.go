@@ -100,6 +100,16 @@ type Player struct {
 	deviceOverride string // set via SetDevice; empty = auto-detect
 	currentURL     string // stored so Seek can signal the playback loop
 
+	// dacMode selects the output path. true (the default) opens the ALSA
+	// hw: device directly for bit-perfect output, reserved exclusively via
+	// D-Bus so PipeWire releases it first. false instead opens the ALSA
+	// "default" PCM — normally PipeWire's own plugin — cooperating with
+	// whatever PipeWire currently routes to (laptop speakers, HDMI,
+	// Bluetooth, ...) rather than stealing a device from it, so playback
+	// works without a recognized DAC connected. Trades away bit-perfectness:
+	// PipeWire may resample or mix. See SetDACMode.
+	dacMode bool
+
 	// seekCh carries seek targets (in samples) to the running playback loop.
 	// Buffered 1 so Seek never blocks; the loop drains it before checking again.
 	seekCh chan uint64
@@ -198,6 +208,31 @@ func (p *Player) SetDevice(hwName string) {
 	p.mu.Unlock()
 }
 
+// pipewireDevice is the ALSA PCM name used in PipeWire mode (SetDACMode
+// false) — the generic "default" alias rather than a hardcoded "pipewire",
+// so this also works unmodified on a system where ALSA's default is routed
+// some other way (plain ALSA, PulseAudio's own ALSA plugin, etc.).
+const pipewireDevice = "default"
+
+// SetDACMode selects the output path: true (the default) resolves and opens
+// the ALSA hw: device exactly as before (SetDevice / auto-detect, D-Bus
+// reservation, bit-perfect format negotiation); false instead always opens
+// pipewireDevice, skipping the reservation entirely since nothing is being
+// taken from PipeWire. Takes effect on the next Play() — a track already
+// playing keeps running under whichever mode it started with.
+func (p *Player) SetDACMode(on bool) {
+	p.mu.Lock()
+	p.dacMode = on
+	p.mu.Unlock()
+}
+
+// DACMode reports the currently configured output path (see SetDACMode).
+func (p *Player) DACMode() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dacMode
+}
+
 // getDevice returns the configured device override or falls back to auto-detection.
 func (p *Player) getDevice() (string, error) {
 	p.mu.Lock()
@@ -244,9 +279,17 @@ func (p *Player) openDevice(ctx context.Context, requested string, channels uint
 		return nil, err
 	}
 	p.rememberPlugFallback(requested, ah.device)
+	p.mu.Lock()
+	dacMode := p.dacMode
+	p.mu.Unlock()
 	p.muInfo.Lock()
 	p.activeDevice = ah.device
-	p.bitPerfect = ah.bitPerfect
+	// In PipeWire mode the negotiated format never reflects genuine
+	// bit-perfectness — PipeWire's own graph may still resample or mix
+	// downstream — regardless of whether our own hw:->plughw: fallback
+	// engaged, so force the badge false rather than let ah.bitPerfect (which
+	// only tracks that one narrow condition) claim otherwise.
+	p.bitPerfect = ah.bitPerfect && dacMode
 	p.muInfo.Unlock()
 	return ah, nil
 }
@@ -269,6 +312,7 @@ func NewPlayer() *Player {
 		pausedCh:  make(chan error, 1),
 		skipCh:    make(chan struct{}),
 		pcmTapCh:  make(chan []byte, 4),
+		dacMode:   true,
 	}
 	atomic.StoreUint64(&p.volumeBits, math.Float64bits(1.0))
 	return p
@@ -429,6 +473,21 @@ func reserveALSADevice(ctx context.Context, cardNum int) (release func(), err er
 	return releaseFunc, nil
 }
 
+// reserveDevice claims the D-Bus device reservation ahead of a bit-perfect
+// hw: open, or is a no-op in PipeWire mode (dacMode false) — there's nothing
+// to reserve exclusively when cooperating with PipeWire's own graph instead
+// of stealing the device from it.
+func (p *Player) reserveDevice(ctx context.Context, dacMode bool, device string) (func(), error) {
+	if !dacMode {
+		return func() {}, nil
+	}
+	cardNum, err := parseCardNum(device)
+	if err != nil {
+		return nil, err
+	}
+	return reserveALSADevice(ctx, cardNum)
+}
+
 type alsaHandle struct {
 	pcm             *C.snd_pcm_t
 	device          string // ALSA device string actually opened (may differ from the requested one on plughw: fallback)
@@ -554,21 +613,26 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 		return nil, errors.New("previous playback is still shutting down, try again")
 	}
 
-	// Resolve device and acquire D-Bus reservation synchronously so we can
-	// return an error to the caller if the device cannot be claimed.
-	device, err := p.getDevice()
-	if err != nil {
-		return nil, err
-	}
+	p.mu.Lock()
+	dacMode := p.dacMode
+	p.mu.Unlock()
 
-	cardNum, err := parseCardNum(device)
-	if err != nil {
-		return nil, err
+	// Resolve device and acquire D-Bus reservation synchronously so we can
+	// return an error to the caller if the device cannot be claimed. In
+	// PipeWire mode there's no hw: device to resolve or reserve — see
+	// SetDACMode.
+	device := pipewireDevice
+	var err error
+	if dacMode {
+		device, err = p.getDevice()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	releaseReservation, err := reserveALSADevice(ctx, cardNum)
+	releaseReservation, err := p.reserveDevice(ctx, dacMode, device)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -754,11 +818,22 @@ func writeSilence(ah *alsaHandle, ms uint32, channels uint8, bytesPerSample int)
 func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseReservation func()) bool {
 	logger.L.Debug("playbackLoop start")
 
-	cardNum, err := parseCardNum(device)
-	if err != nil {
-		logger.L.Error("playbackLoop: cannot parse card number", "device", device, "err", err)
-		releaseReservation()
-		return false
+	p.mu.Lock()
+	dacMode := p.dacMode
+	p.mu.Unlock()
+
+	// cardNum is only meaningful in DAC mode — pipewireDevice ("default")
+	// doesn't parse as an hw:/plughw: string, and reacquireALSA below skips
+	// reserveALSADevice entirely when !dacMode, so it's never dereferenced.
+	var cardNum int
+	if dacMode {
+		var err error
+		cardNum, err = parseCardNum(device)
+		if err != nil {
+			logger.L.Error("playbackLoop: cannot parse card number", "device", device, "err", err)
+			releaseReservation()
+			return false
+		}
 	}
 
 	resp, stream, err := openStream(ctx, url)
@@ -801,12 +876,17 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	}
 	p.muInfo.Unlock()
 
-	// reacquireALSA re-claims the D-Bus reservation and reopens the ALSA
-	// device. Used after releasing on pause.
+	// reacquireALSA re-claims the D-Bus reservation (DAC mode only — see
+	// reserveDevice) and reopens the ALSA device. Used after releasing on
+	// pause.
 	reacquireALSA := func() (*alsaHandle, func(), error) {
-		rel, rerr := reserveALSADevice(ctx, cardNum)
-		if rerr != nil {
-			return nil, nil, rerr
+		rel := func() {}
+		if dacMode {
+			r, rerr := reserveALSADevice(ctx, cardNum)
+			if rerr != nil {
+				return nil, nil, rerr
+			}
+			rel = r
 		}
 		a, aerr := p.openDevice(ctx, device, channels, sampleRate, bits)
 		if aerr != nil {

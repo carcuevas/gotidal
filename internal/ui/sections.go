@@ -13,9 +13,11 @@ import (
 // artistViewActive reports whether the transient artist drill-down is showing.
 func (m *Model) artistViewActive() bool { return m.showArtist }
 
-// renderQueuePane renders the Queue tab: a left column (AlbumArt / Cava /
-// Lyrics, top to bottom) and the queue track list on the right — mirroring
-// rmpc's own default Queue tab split.
+// renderQueuePane renders the Queue tab: a left column (AlbumArt / Lyrics /
+// meter strip, top to bottom) and the queue track list on the right, running
+// the full body height down to the progress bar — mirroring rmpc's own
+// default Queue tab split, with the meter strip anchored under Lyrics rather
+// than carved out of the list.
 func (m *Model) renderQueuePane(t Theme, w, h int) string {
 	g := m.queueLayout(w, h)
 	listW := w
@@ -47,23 +49,23 @@ func (m *Model) renderQueuePane(t Theme, w, h int) string {
 	}
 
 	leftCol := []string{m.renderAlbumArtPane(t, g)}
-	if g.showCava {
-		leftCol = append(leftCol, m.renderCavaPane(t, g.leftW, g.cavaOuterH))
-	}
 	if g.showLyrics {
 		leftCol = append(leftCol, m.renderLyricsPane(t, g.leftW, g.lyricsOuterH))
+	}
+	if g.showCava {
+		leftCol = append(leftCol, m.renderMeterPane(t, g.leftW, g.cavaOuterH))
 	}
 	left := lipgloss.JoinVertical(lipgloss.Left, leftCol...)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, listPanel)
 }
 
 // minQueueLeftPaneW and minQueueLeftBodyH are the smallest tab width and body
-// height that can hold the left column (AlbumArt/Cava/Lyrics) at all. Below
+// height that can hold the left column (AlbumArt/Lyrics/meter) at all. Below
 // either, the whole column is hidden rather than squashed into a sliver.
 const (
 	minQueueLeftPaneW = 70
 	minQueueLeftBodyH = 12
-	cavaOuterHeight   = 4 // frameless — 4 bar rows, no border
+	cavaOuterHeight   = 9 // frameless — 9 bar rows, no border
 	lyricsMinOuterH   = 6
 )
 
@@ -87,11 +89,14 @@ type queueGeom struct {
 
 // queueLayout computes the Queue tab's geometry for outer size w×h. AlbumArt
 // is sized to just contain its natural square (driven by width, via
-// coverBoxDims) rather than stretching to fill the column — the leftover
-// height goes to Cava (a small fixed strip) and then Lyrics gets whatever
-// remains, which is normally the most generous of the three. On a short
-// terminal that leftover shrinks and Cava/Lyrics hide in turn; on a narrow or
-// very short one the whole column hides, matching the old cover-only panel.
+// coverBoxDims) rather than stretching to fill the column. The meter strip
+// (Cava or Peak, see renderMeterPane) gets a fixed height reserved at the
+// bottom of the left column, below Lyrics; Lyrics then gets whatever's left.
+// On a short terminal the meter strip is the first to go (it needs Lyrics to
+// still have a usable height left over, not just any leftover), then Lyrics
+// itself; on a narrow or very short terminal the whole left column hides,
+// matching the old cover-only panel. The track list on the right always runs
+// the tab's full height, unaffected by any of this.
 func (m *Model) queueLayout(w, h int) queueGeom {
 	var g queueGeom
 	if w < minQueueLeftPaneW || h < minQueueLeftBodyH {
@@ -99,7 +104,7 @@ func (m *Model) queueLayout(w, h int) queueGeom {
 		return g
 	}
 	g.showLeft = true
-	g.leftW = min(max(w/3, 26), 44)
+	g.leftW = min(max(w/3, 28), 50)
 	g.listW = w - g.leftW
 
 	innerW := max(g.leftW-2, 1)
@@ -107,11 +112,18 @@ func (m *Model) queueLayout(w, h int) queueGeom {
 	// its own border) — coverBoxDims already caps rows at innerW/cellAspect,
 	// so this only ever constrains the square on a terminal too short for
 	// even that.
-	g.albumArtCols, g.albumArtRows = coverBoxDims(innerW, max(h-2, 1))
+	//
+	// The cover itself is drawn a bit smaller than the full column width
+	// (artShrinkNum/artShrinkDen) so the panel reads as a frame around the
+	// art rather than the art filling it edge to edge; renderAlbumArtPane
+	// centers the shrunk square within innerW.
+	const artShrinkNum, artShrinkDen = 9, 10
+	artW := max(innerW*artShrinkNum/artShrinkDen, 1)
+	g.albumArtCols, g.albumArtRows = coverBoxDims(artW, max(h-2, 1))
 	g.albumArtOuterH = g.albumArtRows + 2
 
 	remH := h - g.albumArtOuterH
-	if remH >= cavaOuterHeight+4 {
+	if remH >= cavaOuterHeight+lyricsMinOuterH {
 		g.showCava = true
 		g.cavaOuterH = cavaOuterHeight
 		remH -= g.cavaOuterH
@@ -154,13 +166,31 @@ func (m *Model) renderAlbumArtPane(t Theme, g queueGeom) string {
 	return renderPanel(t, "", false, g.leftW, g.albumArtOuterH, strings.TrimRight(b.String(), "\n"))
 }
 
+// renderMeterPane renders whichever audio meter is currently selected for the
+// strip anchored under Lyrics, at the same width as the left column: the
+// Cava spectrum (the default) or the Peak/VU meter, toggled via the command
+// palette (see toggleVisualizer in keys.go).
+func (m *Model) renderMeterPane(t Theme, w, h int) string {
+	if m.showPeakMeter {
+		return m.renderPeakPane(t, w, h)
+	}
+	return m.renderCavaPane(t, w, h)
+}
+
 // renderCavaPane renders the CAVA spectrum-visualizer strip: bar heights from
 // the most recent frame cava reported (see internal/visualizer), or a static
 // placeholder when cava isn't running (not installed, or nothing playing).
-// Deliberately frameless (no border) — it sits directly between the AlbumArt
-// and Lyrics panels rather than in its own boxed "VU meter" panel.
+// Deliberately frameless (no border) — it sits directly beneath Lyrics rather
+// than in its own boxed "VU meter" panel.
 func (m *Model) renderCavaPane(t Theme, w, h int) string {
 	return fitBlock(renderCavaBars(t, m.cavaBars, w, h), w, h)
+}
+
+// renderPeakPane renders the Peak/VU meter strip — see renderPeakBars.
+// Deliberately frameless, matching renderCavaPane, since it shares the same
+// strip beneath Lyrics.
+func (m *Model) renderPeakPane(t Theme, w, h int) string {
+	return fitBlock(renderPeakBars(t, m.peakBars, w, h), w, h)
 }
 
 // renderLyricsPane renders the synced-lyrics panel: the line whose timestamp
