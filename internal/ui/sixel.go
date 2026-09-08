@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	sixel "github.com/mattn/go-sixel"
+	"golang.org/x/image/draw"
 	"golang.org/x/sys/unix"
 )
 
@@ -76,13 +77,23 @@ func sixelEncode(img image.Image, pxW, pxH int) string {
 	if img == nil || pxW <= 0 || pxH <= 0 {
 		return ""
 	}
+	// go-sixel's Encoder.Width/Height are documented as "the maximum width/
+	// height to draw" — they crop the source down to that size rather than
+	// resampling it, so handing it the full-resolution cover (e.g. 640×640)
+	// against a smaller pxW×pxH just shows that corner of the original
+	// image, not the whole cover scaled down. Resize explicitly first,
+	// matching the Kitty path's own CatmullRom scale (see kittyTransmit in
+	// termgfx.go), so both protocols actually show the full image.
+	scaled := image.NewRGBA(image.Rect(0, 0, pxW, pxH))
+	draw.CatmullRom.Scale(scaled, scaled.Bounds(), img, img.Bounds(), draw.Over, nil)
+
 	var buf strings.Builder
 	enc := sixel.NewEncoder(&buf)
 	enc.Width = pxW
 	enc.Height = pxH
 	enc.Colors = 256
 	enc.Dither = true
-	if err := enc.Encode(img); err != nil {
+	if err := enc.Encode(scaled); err != nil {
 		return ""
 	}
 	return buf.String()
