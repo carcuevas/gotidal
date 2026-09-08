@@ -10,7 +10,7 @@ It is built on top of the Tidal API and can run in three ways:
 
 All three modes share the same playback engine. The daemon holds exclusive access to the audio device only while a track is actually playing — releasing it on pause so other applications can use it freely.
 
-> 100% vibe coded with [Claude](https://claude.ai) and [Gemini](https://gemini.google.com) — grown out of an earlier player called tidalt, renamed and extended into goTidal.
+> 100% vibe coded with [Claude](https://claude.ai) — grown out of an earlier player called tidalt, renamed and extended into goTidal.
 
 **Linux only.** Requires a Tidal HiFi or HiFi Plus subscription.
 
