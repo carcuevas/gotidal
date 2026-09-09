@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -222,21 +221,41 @@ type artistTopTracksResponse struct {
 	Items []Track `json:"items"`
 }
 
-// v2 JSON:API types for mixes and playlist items.
+// mixTracksLimit caps how many items a single mix request returns. Mixes are
+// short (tens of tracks), so one page is always enough.
+const mixTracksLimit = 100
 
-type v2ResourceIdentifier struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
+// pageResponse is the v1 "pages/*" envelope. Only the fields the mix list
+// needs are modelled; the rest of the page payload (graphics, colours, module
+// metadata) is ignored.
+type pageResponse struct {
+	Rows []struct {
+		Modules []struct {
+			PagedList struct {
+				Items              []pageMixItem `json:"items"`
+				TotalNumberOfItems int           `json:"totalNumberOfItems"`
+			} `json:"pagedList"`
+		} `json:"modules"`
+	} `json:"rows"`
 }
 
-type v2PlaylistAttributes struct {
-	Name        string `json:"name"`
+// pageMixItem is one mix entry inside a MIX_LIST module.
+type pageMixItem struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	SubTitle    string `json:"subTitle"`
 	Description string `json:"description"`
+	MixType     string `json:"mixType"`
 }
 
-type v2jsonAPIResponse struct {
-	Data     []v2ResourceIdentifier `json:"data"`
-	Included []json.RawMessage      `json:"included"`
+// mixItemsResponse is the v1 /mixes/{id}/items payload. Each entry wraps the
+// media object and tags it with its kind ("track" or "video").
+type mixItemsResponse struct {
+	Items []struct {
+		Item Track  `json:"item"`
+		Type string `json:"type"`
+	} `json:"items"`
+	TotalNumberOfItems int `json:"totalNumberOfItems"`
 }
 
 func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
@@ -326,6 +345,10 @@ var qualityLadder = []Quality{QualityHiRes, QualityLossless, QualityHigh, Qualit
 // more than bit-perfectness.
 var lowDataQualityLadder = []Quality{QualityHigh, QualityLow}
 
+// Lossy reports whether the tier is a lossy (AAC) one. HIGH and LOW are
+// transcodes; HI_RES_LOSSLESS and LOSSLESS are not.
+func (q Quality) Lossy() bool { return q == QualityHigh || q == QualityLow }
+
 // qualityLabels maps each tier to its short display label.
 var qualityLabels = map[Quality]string{
 	QualityHiRes:    "hi-res",
@@ -349,9 +372,42 @@ func (q Quality) Label() string {
 
 // StreamInfo carries the resolved stream URL and its detected format extension.
 type StreamInfo struct {
-	URL     string
-	Ext     string  // e.g. "flac", "mp4", "m4a"
+	// URLs is the stream in order. A plain URL is a single entry; a hi-res
+	// DASH presentation is the initialization segment followed by every media
+	// segment, which concatenate into one byte stream (see internal/player's
+	// segmentReader). Never empty on a successful resolve.
+	URLs    []string
+	Ext     string  // e.g. "flac", "mp4", "m4a" — logging only
 	Quality Quality // the tier that was actually granted
+
+	// BitDepth and SampleRate are the source format as the server reports it,
+	// or 0 when it does not. Only playbackinfopostpaywall supplies these;
+	// urlpostpaywall leaves them zero and the depth is inferred from the
+	// container instead.
+	BitDepth   uint8
+	SampleRate uint32
+
+	// DurationSec is the whole presentation's length, from the manifest, or 0
+	// when the container can measure itself. A fragmented stream cannot: only
+	// the initialization segment is available when the decoder opens, so
+	// libavformat reports the first fragment's duration as the track's.
+	DurationSec float64
+
+	// InitURLs is how many leading URLs are initialization segments (1 for a
+	// DASH presentation, 0 otherwise), and SegmentSeconds the playing time of
+	// one media segment. Together they let a seek reopen at the segment
+	// holding the target instead of re-fetching the whole track up to it.
+	InitURLs       int
+	SegmentSeconds float64
+}
+
+// URL returns the first URL, for the callers and logs that only need to
+// identify the stream rather than read all of it.
+func (s StreamInfo) URL() string {
+	if len(s.URLs) == 0 {
+		return ""
+	}
+	return s.URLs[0]
 }
 
 // GetStreamURL resolves the stream URL for trackID, walking qualityLadder
@@ -368,7 +424,7 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (S
 	var tiers, reasons []string
 
 	for _, q := range ladder {
-		info, err := c.streamURLForQuality(ctx, trackID, q)
+		info, err := c.resolveQualityTier(ctx, trackID, q)
 		if err != nil {
 			// Logged rather than surfaced: a higher tier failing and falling
 			// back to a lower one is normal (account entitlement, or no
@@ -419,6 +475,38 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (S
 		trackID, strings.Join(parts, "; "))
 }
 
+// resolveQualityTier resolves one tier, preferring playbackinfopostpaywall —
+// the only endpoint that can express a hi-res DASH presentation, and the only
+// one that reports the source bit depth and sample rate — and falling back to
+// the older urlpostpaywall when it refuses.
+//
+// The fallback matters: urlpostpaywall is what every tier used until hi-res
+// support was added, so keeping it means a playbackinfo failure degrades to
+// the previously working behaviour rather than losing the track outright.
+func (c *Client) resolveQualityTier(ctx context.Context, trackID int, q Quality) (StreamInfo, error) {
+	info, err := c.playbackInfo(ctx, trackID, q)
+	if err == nil {
+		return info, nil
+	}
+	logger.L.Debug("playbackinfo failed, falling back to urlpostpaywall",
+		"trackID", trackID, "quality", q, "err", err)
+
+	// Hi-res only exists as a DASH presentation, so urlpostpaywall cannot
+	// serve it — retrying there would burn a request to be told the same
+	// thing in a less specific way. Report what playbackinfo said instead.
+	if q == QualityHiRes {
+		return StreamInfo{}, err
+	}
+
+	info, fallbackErr := c.streamURLForQuality(ctx, trackID, q)
+	if fallbackErr != nil {
+		// Surface the playbackinfo reason: it is the endpoint that should
+		// have worked, so its explanation is the more useful one.
+		return StreamInfo{}, err
+	}
+	return info, nil
+}
+
 // streamURLForQuality fetches the stream URL for a single audio-quality tier.
 // Pulled out of GetStreamURL so the response body is closed per attempt rather
 // than via a defer accumulated inside the quality-ladder loop.
@@ -451,12 +539,11 @@ func (c *Client) streamURLForQuality(ctx context.Context, trackID int, q Quality
 	}
 
 	streamURL := s.URLs[0]
-	base := strings.SplitN(streamURL, "?", 2)[0]
-	ext := ""
-	if i := strings.LastIndex(base, "."); i >= 0 {
-		ext = strings.ToLower(base[i+1:])
-	}
-	return StreamInfo{URL: streamURL, Ext: ext, Quality: q}, nil
+	return StreamInfo{
+		URLs:    []string{streamURL},
+		Ext:     streamExt("", streamURL),
+		Quality: q,
+	}, nil
 }
 
 func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
@@ -712,12 +799,23 @@ func (c *Client) RemoveFavorite(ctx context.Context, trackID int) error {
 	return nil
 }
 
+// GetMixes returns the user's personalised mixes (My Daily Discovery, My Mix
+// 1..N and friends).
+//
+// It reads the v1 "my_collection_my_mixes" page rather than the v2
+// userRecommendations relationship this used to call: Tidal removed
+// openapi.tidal.com/v2/userRecommendations entirely and it now answers 404
+// for every request, which is what made the mixes view come up empty.
+//
+// Video mixes are skipped — their items are videos, which this player cannot
+// decode.
 func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
-	params.Set("include", "myMixes")
+	params.Set("deviceType", "BROWSER")
+	params.Set("locale", "en_US")
 
-	u := BaseURLV2 + "/userRecommendations/me/relationships/myMixes?" + params.Encode()
+	u := BaseURL + "/pages/my_collection_my_mixes?" + params.Encode()
 	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
@@ -735,122 +833,85 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 		return nil, apiErr("get mixes", resp.StatusCode, body)
 	}
 
-	var res v2jsonAPIResponse
-	if err := decodeJSON(resp.Body, &res); err != nil {
+	var page pageResponse
+	if err := decodeJSON(resp.Body, &page); err != nil {
 		return nil, err
 	}
 
-	// Build a lookup of playlist attributes from included resources.
-	playlistAttrs := make(map[string]v2PlaylistAttributes)
-	for _, raw := range res.Included {
-		var obj struct {
-			ID         string               `json:"id"`
-			Type       string               `json:"type"`
-			Attributes v2PlaylistAttributes `json:"attributes"`
+	var mixes []Mix
+	seen := make(map[string]struct{})
+	for _, row := range page.Rows {
+		for _, mod := range row.Modules {
+			for _, item := range mod.PagedList.Items {
+				if item.ID == "" || isVideoMixType(item.MixType) {
+					continue
+				}
+				if _, dup := seen[item.ID]; dup {
+					continue
+				}
+				seen[item.ID] = struct{}{}
+				mixes = append(mixes, Mix{
+					ID:          item.ID,
+					Title:       item.Title,
+					SubTitle:    item.SubTitle,
+					Description: item.Description,
+				})
+			}
 		}
-		if err := json.Unmarshal(raw, &obj); err != nil {
-			continue
-		}
-		// res.Included is []json.RawMessage, so decodeJSON's walk could not
-		// reach inside it — these strings are only decoded here.
-		sanitize.Strings(&obj)
-		if obj.Type == "playlists" {
-			playlistAttrs[obj.ID] = obj.Attributes
-		}
-	}
-
-	mixes := make([]Mix, 0, len(res.Data))
-	for _, ref := range res.Data {
-		mix := Mix{ID: ref.ID}
-		if attrs, ok := playlistAttrs[ref.ID]; ok {
-			mix.Title = attrs.Name
-			mix.SubTitle = attrs.Description
-		} else {
-			mix.Title = ref.ID
-		}
-		mixes = append(mixes, mix)
 	}
 	return mixes, nil
 }
 
+// isVideoMixType reports whether a mix serves video items rather than tracks.
+func isVideoMixType(mixType string) bool {
+	return strings.Contains(mixType, "VIDEO")
+}
+
+// GetMixTracks returns the tracks of a mix in playlist order.
+//
+// The v1 mix items endpoint returns fully populated tracks (artist and album
+// included) in a single request, so no per-track lookups are needed — the
+// old v2 playlist-relationship endpoint returned bare track IDs only, which
+// this used to resolve with one concurrent /v1/tracks/{id} request per track.
 func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error) {
 	if err := checkID(mixID); err != nil {
 		return nil, err
 	}
-	// Step 1: fetch the ordered list of track IDs from the v2 playlist endpoint.
-	// The v2 API only returns IDs here — artist/album sideloading is not supported
-	// by this endpoint despite the include parameter existing in the spec.
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
-	params.Set("include", "items")
+	params.Set("deviceType", "BROWSER")
+	params.Set("locale", "en_US")
+	params.Set("limit", strconv.Itoa(mixTracksLimit))
 
-	u := BaseURLV2 + "/playlists/" + mixID + "/relationships/items?" + params.Encode()
+	u := BaseURL + "/mixes/" + url.PathEscape(mixID) + "/items?" + params.Encode()
 	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get mix tracks", resp.StatusCode, body)
 	}
 
-	var res v2jsonAPIResponse
+	var res mixItemsResponse
 	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 
-	// Collect track IDs in order, skipping non-track refs.
-	ids := make([]string, 0, len(res.Data))
-	for _, ref := range res.Data {
-		if ref.Type == "tracks" {
-			ids = append(ids, ref.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
-	// Step 2: fetch full track details (with artist + album) from the v1 API
-	// concurrently, one request per track.
-	type result struct {
-		idx   int
-		track Track
-		err   error
-	}
-	ch := make(chan result, len(ids))
-	for i, id := range ids {
-		go func(idx int, trackID string) {
-			t, err := c.GetTrack(ctx, trackID)
-			if err != nil {
-				ch <- result{idx: idx, err: err}
-				return
-			}
-			ch <- result{idx: idx, track: *t}
-		}(i, id)
-	}
-
-	type indexedTrack struct {
-		idx   int
-		track Track
-	}
-	var available []indexedTrack
-	for range ids {
-		r := <-ch
-		if errors.Is(r.err, ErrNotFound) {
+	tracks := make([]Track, 0, len(res.Items))
+	for i := range res.Items {
+		// Video mixes return "video" items, which this player cannot decode.
+		if res.Items[i].Type != "track" {
 			continue
 		}
-		if r.err != nil {
-			return nil, fmt.Errorf("failed to get mix track details: %w", r.err)
-		}
-		available = append(available, indexedTrack{r.idx, r.track})
+		t := res.Items[i].Item
+		t.normalizeArtist()
+		tracks = append(tracks, t)
 	}
-	// Sort by original playlist position.
-	slices.SortFunc(available, func(a, b indexedTrack) int { return a.idx - b.idx })
-	ordered := make([]Track, len(available))
-	for i := range available {
-		ordered[i] = available[i].track
-	}
-	return ordered, nil
+	return tracks, nil
 }

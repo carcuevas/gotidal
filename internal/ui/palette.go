@@ -109,6 +109,13 @@ type Theme struct {
 	// Status / chrome.
 	Header lipgloss.Style // "Playing: …" (cyan bold)
 	Toast  lipgloss.Style // green save confirmation
+	// Hi-res badge styles, keyed to the rate actually reaching the DAC:
+	// QualityHiRes192 for the 176.4/192 kHz family, QualityHiRes96 for
+	// 88.2/96 kHz. Two colours rather than one so the tier you got is legible
+	// at a glance without putting the numbers back in the badge.
+	QualityHiRes192 lipgloss.Style // violet
+	QualityHiRes96  lipgloss.Style // green
+
 	Err    lipgloss.Style // error banner
 	Amber  lipgloss.Style // "edited / unsaved — save" hint
 	GreenT lipgloss.Style // "synced" hint
@@ -154,6 +161,9 @@ func (p Palette) Theme() Theme {
 		RowFaint:     lipgloss.NewStyle().Foreground(p.FgFaint),
 		Fav:          lipgloss.NewStyle().Foreground(p.Rose),
 		LyricsActive: lipgloss.NewStyle().Foreground(p.Cyan).Background(p.BgSel),
+
+		QualityHiRes192: lipgloss.NewStyle().Foreground(p.Purple).Bold(true),
+		QualityHiRes96:  lipgloss.NewStyle().Foreground(p.Green).Bold(true),
 
 		SideGroup:      lipgloss.NewStyle().Foreground(p.FgFaint),
 		SideItem:       lipgloss.NewStyle().Foreground(p.Fg),

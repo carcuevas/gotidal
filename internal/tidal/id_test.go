@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -148,9 +149,14 @@ func TestAPIErrSanitizesBody(t *testing.T) {
 func TestStreamLadderErrorNamesEveryTier(t *testing.T) {
 	const reason = "Asset is not ready for playback"
 
+	// Each tier is attempted at playbackinfopostpaywall and then, except for
+	// hi-res, at urlpostpaywall — so collect the distinct tiers rather than
+	// the raw request count.
 	var hits []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits = append(hits, r.URL.Query().Get("audioquality"))
+		if q := r.URL.Query().Get("audioquality"); !slices.Contains(hits, q) {
+			hits = append(hits, q)
+		}
 		w.WriteHeader(http.StatusPreconditionFailed)
 		_, _ = w.Write([]byte(`{"userMessage":"` + reason + `"}`))
 	}))

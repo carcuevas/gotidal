@@ -55,14 +55,32 @@ func TestPlugFallbackIsMemoised(t *testing.T) {
 // the UI never renders a "(converted)" badge on a fresh session.
 func TestAudioPathDefaultsToBitPerfect(t *testing.T) {
 	p := &Player{}
-	device, bitPerfect := p.AudioPath()
-	if device != "" || !bitPerfect {
-		t.Errorf("AudioPath() = (%q, %v), want (\"\", true)", device, bitPerfect)
+	device, bitPerfect, dacMode := p.AudioPath()
+	if device != "" || !bitPerfect || !dacMode {
+		t.Errorf("AudioPath() = (%q, %v, %v), want (\"\", true, true)", device, bitPerfect, dacMode)
 	}
 
+	// Simulates the real hw:->plughw: fallback: DAC mode was requested
+	// (activeDACMode true) but the negotiation itself had to compromise.
 	p.activeDevice = "plughw:2,0"
 	p.bitPerfect = false
-	if device, bitPerfect = p.AudioPath(); device != "plughw:2,0" || bitPerfect {
-		t.Errorf("AudioPath() = (%q, %v), want (\"plughw:2,0\", false)", device, bitPerfect)
+	p.activeDACMode = true
+	if device, bitPerfect, dacMode = p.AudioPath(); device != "plughw:2,0" || bitPerfect || !dacMode {
+		t.Errorf("AudioPath() = (%q, %v, %v), want (\"plughw:2,0\", false, true)", device, bitPerfect, dacMode)
+	}
+}
+
+// A PipeWire-mode open must be reported as such, distinct from the plughw:
+// fallback above — both set bitPerfect false, but only dacMode tells them
+// apart, which is what lets the quality badge avoid claiming a "(converted)"
+// downgrade PipeWire mode cannot actually verify.
+func TestAudioPathReportsPipeWireMode(t *testing.T) {
+	p := &Player{}
+	p.activeDevice = "default"
+	p.bitPerfect = false
+	p.activeDACMode = false
+	device, bitPerfect, dacMode := p.AudioPath()
+	if device != "default" || bitPerfect || dacMode {
+		t.Errorf("AudioPath() = (%q, %v, %v), want (\"default\", false, false)", device, bitPerfect, dacMode)
 	}
 }

@@ -22,6 +22,11 @@ const settingsRowCount = 5
 // fixed row list; Enter activates whichever row is selected; t is a quick
 // shortcut that applies the next theme in paletteOrder immediately, without
 // opening the Themes picker.
+//
+// "t" is scoped to this tab deliberately. It used to be a global binding, so
+// it fired while typing a new playlist's name and swapped the theme mid-word;
+// changing the theme now means coming to Settings, either through this
+// shortcut or the Themes row.
 func (m Model) updateSettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "h", keyLeft:
@@ -43,15 +48,7 @@ func (m Model) updateSettings(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyEnter:
 		return m.activateSettingsRow()
 	case "t":
-		i := 0
-		for j, name := range paletteOrder {
-			if name == m.themeName {
-				i = j
-				break
-			}
-		}
-		i = (i + 1) % len(paletteOrder)
-		m.applyTheme(paletteOrder[i])
+		m.cycleTheme()
 		return m, nil
 	}
 	return m, nil

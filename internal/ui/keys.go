@@ -28,7 +28,7 @@ const (
 const errClientModeUnavailable = "Not available in client mode — the daemon owns the player"
 
 // handleKey is the top-level key dispatcher. Order of precedence:
-//  1. the second key of a pending two-key sequence (rmpc's g/o/Ctrl+S chains)
+//  1. the second key of a pending two-key sequence (rmpc's g/o prefix chains)
 //  2. global keys (quit, tab switch, command palette, help, ...)
 //  3. an active overlay
 //  4. a focused search input
@@ -68,6 +68,30 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.updateSection(k)
 }
 
+// textEntryFocused reports whether the user is currently typing into a text
+// field — the Search input or any of the overlays built around one.
+//
+// Every global single-letter binding has to consult this, not just the search
+// input: "q" quit the whole application out from under someone half-way
+// through naming a new playlist, and ":" opened the command palette on top of
+// them, because those two guards only ever knew about Search and the command
+// palette. The other globals happen to be safe only because they bail on any
+// overlay at all; this keeps the distinction in one place so a new text
+// overlay can't quietly reintroduce the same bug.
+func (m *Model) textEntryFocused() bool {
+	if m.searchInput.Focused() {
+		return true
+	}
+	switch m.overlay {
+	case OverlayCommandPalette, OverlayNewPlaylistName, OverlayImportSpotify:
+		return true
+	case OverlayNone, OverlayActionSheet, OverlayDeviceSelect, OverlayAddToPlaylist,
+		OverlayDeletePlaylist, OverlayHelp, OverlaySongInfo, OverlayThemePicker:
+		return false
+	}
+	return false
+}
+
 // handleGlobalKey handles keys that work regardless of tab/overlay. It
 // returns (cmd, true) when it consumed the key. It mutates through the pointer.
 func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
@@ -76,7 +100,7 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		return m.quit(), true
 	case "q":
 		// In a focused text input, "q" is literal text — don't quit.
-		if m.searchInput.Focused() || m.overlay == OverlayCommandPalette {
+		if m.textEntryFocused() {
 			return nil, false
 		}
 		return m.quit(), true
@@ -85,7 +109,7 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		if m.overlay == OverlayCommandPalette {
 			return nil, true
 		}
-		if m.searchInput.Focused() {
+		if m.textEntryFocused() {
 			return nil, false
 		}
 		m.openCommandPalette()
@@ -96,13 +120,6 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, false
 		}
 		m.overlay = OverlayHelp
-		return nil, true
-
-	case "t":
-		if m.searchInput.Focused() || m.section == SecSettings {
-			return nil, false // Settings owns "t"; input treats it as text
-		}
-		m.cycleTheme()
 		return nil, true
 
 	case "v":
@@ -122,6 +139,17 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return nil, true
 
+	case "ctrl+s":
+		// A direct binding, not the two-key "Ctrl+S a" chain it used to be:
+		// saving the queue was the chain's only member, so the second key
+		// bought nothing but a swallowed keystroke when it was mistyped.
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
+			return nil, false
+		}
+		nm, cmd := m.saveQueueAsNew()
+		*m = nm.(Model) //nolint:forcetypeassert // saveQueueAsNew always returns a Model
+		return cmd, true
+
 	case "tab":
 		// Deliberately not guarded by searchInput.Focused(): a literal tab
 		// character has no legitimate use in a search query, so Tab always
@@ -136,7 +164,7 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return m.cycleTab(-1), true
 
-	case "g", "o", "ctrl+s":
+	case "g", "o":
 		if m.searchInput.Focused() || m.overlay != OverlayNone {
 			return nil, false
 		}
@@ -177,7 +205,7 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 }
 
 // handlePendingKey resolves the second key of a two-key sequence started by
-// handleGlobalKey (rmpc's g/o/Ctrl+S prefix chains). An unrecognized second
+// handleGlobalKey (rmpc's g/o prefix chains). An unrecognized second
 // key silently cancels the sequence, matching rmpc's own behavior.
 func (m Model) handlePendingKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	prefix := m.pendingKey
@@ -208,10 +236,6 @@ func (m Model) handlePendingKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "o":
 			m.openDeviceSelect()
 			return m, nil
-		}
-	case "ctrl+s":
-		if key == "a" {
-			return m.saveQueueAsNew()
 		}
 	}
 	return m, nil
@@ -292,6 +316,7 @@ func (m *Model) quit() tea.Cmd {
 		m.cava.Stop()
 	}
 	m.store.Close()
+	m.clearGraphicsOverlays()
 	return tea.Quit
 }
 
@@ -426,16 +451,13 @@ func (m *Model) loadSection(sec Section) tea.Cmd {
 			return mixesMsg(mixes)
 		}
 	case SecPlaylists:
-		if len(m.playlists) > 0 {
+		// Unlike the other tabs' caches this one has to expire: the app
+		// creates and deletes playlists itself, so "already loaded" is not the
+		// same as "still correct" (see markPlaylistsStale).
+		if len(m.playlists) > 0 && !m.playlistsStale {
 			return nil
 		}
-		return func() tea.Msg {
-			pls, err := m.client.GetUserPlaylists(m.ctx)
-			if err != nil {
-				return errMsg(err)
-			}
-			return playlistsMsg(pls)
-		}
+		return m.reloadPlaylistsCmd()
 	case SecFavArtists:
 		if len(m.favArtists) > 0 {
 			return nil
@@ -558,8 +580,79 @@ func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+
+	case "a":
+		// A mix row isn't a track — selectedTrack()'s generic "a" handling in
+		// commonKeys falls through to m.tracks (the Queue's own list, since
+		// Queue and Mixes share this cursor and handler), which either does
+		// nothing or, worse, enqueues whatever queue track happens to sit at
+		// the same index as the mix under the cursor. Fetch and enqueue the
+		// mix's own tracks instead, mirroring enqueuePlaylistCmd's "add
+		// without drilling in first" for playlists.
+		if m.section == SecMixes && m.cursor >= 0 && m.cursor < len(m.mixes) {
+			cmd := m.enqueueMixCmd(m.mixes[m.cursor])
+			return m, cmd
+		}
+		// Queue/Now Playing: fall through to commonKeys's selectedTrack()
+		// based handling below.
 	}
 	return m.commonKeys(k)
+}
+
+// enqueueArtistTracksCmd fetches tracks via fetch and appends them to the end
+// of the live queue without disturbing current playback — "a" on the artist
+// drill-down's "▶ Play all tracks"/"★ Top tracks" rows, the non-destructive
+// counterpart to Enter (which loads and plays, replacing the queue). Reuses
+// enqueuePlaylistMsg, same as enqueueMixCmd: the message itself carries
+// nothing playlist-specific.
+func enqueueArtistTracksCmd(title string, fetch func() ([]tidal.Track, error)) tea.Cmd {
+	return func() tea.Msg {
+		tracks, err := fetch()
+		if err != nil {
+			return errMsg(err)
+		}
+		return enqueuePlaylistMsg{title: title, tracks: tracks}
+	}
+}
+
+// enqueueMixCmd fetches mix's tracks and appends them to the end of the live
+// queue in one shot — pressing "a" on a mix row directly, the Mixes-tab
+// counterpart of enqueuePlaylistCmd. Reuses enqueuePlaylistMsg: the message
+// itself carries nothing playlist-specific (just a title and a track list).
+func (m *Model) enqueueMixCmd(mix tidal.Mix) tea.Cmd {
+	id := mix.ID
+	title := mix.Title
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		tracks, err := client.GetMixTracks(ctx, id)
+		if err != nil {
+			return errMsg(err)
+		}
+		return enqueuePlaylistMsg{title: title, tracks: tracks}
+	}
+}
+
+// enqueueAlbumCmd fetches alb's tracks and appends them to the end of the
+// live queue in one shot — pressing "a" on any album row (Search results,
+// Favorite Albums, an artist's discography), the album counterpart of
+// enqueuePlaylistCmd/enqueueMixCmd. Reuses enqueuePlaylistMsg, which carries
+// nothing playlist-specific: just a title and a track list.
+func (m *Model) enqueueAlbumCmd(alb tidal.Album) tea.Cmd {
+	if alb.ID == 0 {
+		return nil
+	}
+	id := strconv.Itoa(alb.ID)
+	title := alb.Title
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		tracks, err := client.GetAlbumTracks(ctx, id)
+		if err != nil {
+			return errMsg(err)
+		}
+		return enqueuePlaylistMsg{title: title, tracks: tracks}
+	}
 }
 
 // commonKeys handles keys shared by every tab (playback transport, volume,
@@ -589,12 +682,51 @@ func (m Model) commonKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "<":
 		return m.skipPrev()
 	case "a":
+		// An album row isn't a track, so selectedTrack() finds nothing for it
+		// and "a" did nothing at all on a Search album result, on the
+		// Favorite Albums tab, or on an artist's discography — even though the
+		// same key on a *playlist* or *mix* row enqueues the whole thing.
+		// Fetch and append the album's tracks instead, the same
+		// "add without drilling in first" as enqueuePlaylistCmd/enqueueMixCmd.
+		// Checked before the track path in the same order "i" uses (see
+		// selectedAlbum), since the two are never both present.
+		if album, _ := m.selectedAlbum(); album != nil {
+			cmd := m.enqueueAlbumCmd(*album)
+			return m, cmd
+		}
 		if t := m.selectedTrack(); t != nil {
 			m.enqueueEnd(*t)
 		}
 	case "A":
 		m.enqueueAllVisible()
 	case "F":
+		if t := m.selectedTrack(); t != nil {
+			cmd := m.toggleFavorite(*t)
+			return m, cmd
+		}
+	case "i":
+		// "i" favorites whatever is under the cursor, whatever kind of row
+		// that is, from any tab — unlike "F" (tracks only). Checked in order
+		// of what's unambiguous: an album row (Favorite Albums, an artist's
+		// discography, or a Search album result — see selectedAlbum), then
+		// an artist row (Favorite Artists or a Search artist result — see
+		// selectedArtist), a track otherwise.
+		if album, remove := m.selectedAlbum(); album != nil {
+			if remove {
+				cmd := m.removeFavoriteAlbumCmd(*album)
+				return m, cmd
+			}
+			cmd := m.addFavoriteAlbumCmd(*album)
+			return m, cmd
+		}
+		if artist, remove := m.selectedArtist(); artist != nil {
+			if remove {
+				cmd := m.removeFavoriteArtistCmd(*artist)
+				return m, cmd
+			}
+			cmd := m.addFavoriteArtistCmd(*artist)
+			return m, cmd
+		}
 		if t := m.selectedTrack(); t != nil {
 			cmd := m.toggleFavorite(*t)
 			return m, cmd
@@ -613,10 +745,24 @@ func (m Model) commonKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 // --- shared action helpers ---
 
 func (m *Model) seekBy(delta float64) {
-	if !m.clientMode && m.player != nil && m.currentTrack != nil {
-		if err := m.player.Seek(m.currPos + delta); err != nil {
-			m.errText = err.Error()
-		}
+	if m.clientMode || m.player == nil || m.currentTrack == nil {
+		return
+	}
+	// m.currPos only refreshes once a second, on tickMsg — so pressing f
+	// three times inside that second used to read the same stale value each
+	// time and send the same target three times, netting +10s instead of
+	// +30s. Updating it immediately here means the very next press (however
+	// soon after) accumulates on top of where this one is headed rather than
+	// where playback happened to be a second ago; tickMsg overwrites it again
+	// once the player reports the real post-seek position, so this is just an
+	// optimistic bridge across the gap between presses.
+	target := max(m.currPos+delta, 0)
+	if m.duration > 0 {
+		target = min(target, m.duration)
+	}
+	m.currPos = target
+	if err := m.player.Seek(target); err != nil {
+		m.errText = err.Error()
 	}
 }
 
@@ -893,6 +1039,70 @@ func (m *Model) toggleFavorite(t tidal.Track) tea.Cmd {
 	}
 }
 
+// addFavoriteAlbumCmd adds album to favorites — the "i" action on the artist
+// drill-down's album list. One-directional (add only, not a toggle): browsing
+// an artist's discography has no per-row favorited indicator to toggle off
+// from, unlike the Favorite Albums tab itself (see removeFavoriteAlbumCmd).
+func (m *Model) addFavoriteAlbumCmd(album tidal.Album) tea.Cmd {
+	id := album.ID
+	title := album.Title
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		if err := client.AddFavoriteAlbum(ctx, id); err != nil {
+			return errMsg(err)
+		}
+		return favoriteAlbumAddedMsg{title: title}
+	}
+}
+
+// removeFavoriteAlbumCmd removes album from favorites — "i" on the Favorite
+// Albums tab, where every row is already a favorite by definition, so there
+// is nothing to toggle: "i" there can only mean remove.
+func (m *Model) removeFavoriteAlbumCmd(album tidal.Album) tea.Cmd {
+	id := album.ID
+	title := album.Title
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		if err := client.RemoveFavoriteAlbum(ctx, id); err != nil {
+			return errMsg(err)
+		}
+		return favoriteAlbumRemovedMsg{albumID: id, title: title}
+	}
+}
+
+// addFavoriteArtistCmd adds artist to favorites — "i" on a Search artist row,
+// or the action sheet's "Favorite artist" entry for the current track's
+// artist. One-directional (add only): see selectedArtist for why.
+func (m *Model) addFavoriteArtistCmd(artist tidal.Artist) tea.Cmd {
+	id := artist.ID
+	name := artist.Name
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		if err := client.AddFavoriteArtist(ctx, id); err != nil {
+			return errMsg(err)
+		}
+		return favoriteArtistAddedMsg{name: name}
+	}
+}
+
+// removeFavoriteArtistCmd removes artist from favorites — "i" on the
+// Favorite Artists tab, where every row is already a favorite.
+func (m *Model) removeFavoriteArtistCmd(artist tidal.Artist) tea.Cmd {
+	id := artist.ID
+	name := artist.Name
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		if err := client.RemoveFavoriteArtist(ctx, id); err != nil {
+			return errMsg(err)
+		}
+		return favoriteArtistRemovedMsg{artistID: id, name: name}
+	}
+}
+
 func (m Model) copyLink() (tea.Model, tea.Cmd) {
 	if t := m.selectedTrack(); t != nil {
 		return m.copyTrackLink(*t)
@@ -964,6 +1174,27 @@ func (m Model) updateArtist(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyDown, "j":
 		if m.artistCursor < len(m.artistAlbums)+2-1 {
 			m.artistCursor++
+		}
+		return m, nil
+	case "a":
+		// Add without replacing the live queue/current playback — the
+		// counterpart to Enter below (which loads and plays, replacing the
+		// queue). The two synthetic rows fetch by artist; every other row is
+		// an album, which enqueues its own tracks (see enqueueAlbumCmd)
+		// rather than drilling in first.
+		switch m.artistCursor {
+		case 0:
+			return m, enqueueArtistTracksCmd(m.artistName+" — all tracks", func() ([]tidal.Track, error) {
+				return m.client.GetArtistAllTracks(m.ctx, m.artistID)
+			})
+		case 1:
+			return m, enqueueArtistTracksCmd(m.artistName+" — top tracks", func() ([]tidal.Track, error) {
+				return m.client.GetArtistTopTracks(m.ctx, m.artistID, 100)
+			})
+		}
+		if album, _ := m.selectedAlbum(); album != nil {
+			cmd := m.enqueueAlbumCmd(*album)
+			return m, cmd
 		}
 		return m, nil
 	case keyEnter:
@@ -1055,13 +1286,87 @@ func (m *Model) selectedTrack() *tidal.Track {
 	case m.section == SecPlaylists && m.detailFocus && len(m.detailTracks) > 0 && m.detailCursor < len(m.detailTracks):
 		t := m.detailTracks[m.detailCursor]
 		return &t
-	case len(m.tracks) > 0 && m.cursor >= 0 && m.cursor < len(m.tracks):
+	case m.section == SecFavAlbums || m.section == SecFavArtists:
+		// Rows here are albums/artists, not tracks — selectedAlbum/
+		// selectedArtist handle these tabs, and falling through to the
+		// generic case below would otherwise silently act on whatever
+		// unrelated queue track happens to share the row index (same
+		// reasoning as the Mixes exclusion).
+		return nil
+	case m.showArtist && m.artistAlbum != nil && len(m.artistAlbumTracks) > 0 && m.artistAlbumCursor < len(m.artistAlbumTracks):
+		// A track viewed inside an album opened from the artist drill-down —
+		// a genuine track list, just indexed by artistAlbumCursor rather than
+		// the shared m.cursor (mirrors the SecPlaylists detail case above).
+		t := m.artistAlbumTracks[m.artistAlbumCursor]
+		return &t
+	case m.showArtist:
+		// The drill-down's own top-level rows ("▶ Play all tracks",
+		// "★ Top tracks", and the album list before one is opened) aren't
+		// tracks either, and index m.artistCursor/m.artistAlbums, not
+		// m.cursor/m.tracks — same reasoning as the Mixes/FavAlbums
+		// exclusions above.
+		return nil
+	case m.section != SecMixes && len(m.tracks) > 0 && m.cursor >= 0 && m.cursor < len(m.tracks):
+		// Excludes Mixes: it shares this cursor and m.tracks with the Queue
+		// tab, but a mix row indexes m.mixes, not m.tracks — without this
+		// guard, a key that falls through to selectedTrack() while browsing
+		// Mixes (favorite, radio, copy-link) silently acted on whatever
+		// unrelated queue track happened to sit at the same index instead of
+		// on nothing, which was worse than a no-op.
 		t := m.tracks[m.cursor]
 		return &t
 	case m.currentTrack != nil:
 		return m.currentTrack
 	default:
 		return nil
+	}
+}
+
+// selectedAlbum returns the album under the cursor, and whether "i" on it
+// means remove (true, for the Favorite Albums tab, where every row is already
+// a favorite by definition) or add (false, for the artist drill-down's
+// discography list, which has no per-row favorited indicator to toggle off
+// from). Returns (nil, false) everywhere else.
+func (m *Model) selectedAlbum() (album *tidal.Album, remove bool) {
+	switch {
+	case m.section == SecFavAlbums && m.cursor >= 0 && m.cursor < len(m.favAlbums):
+		a := m.favAlbums[m.cursor]
+		return &a, true
+	case m.showArtist && m.artistAlbum == nil:
+		if idx := m.artistCursor - 2; idx >= 0 && idx < len(m.artistAlbums) {
+			a := m.artistAlbums[idx]
+			return &a, false
+		}
+		return nil, false
+	case m.section == SecSearch:
+		if row, ok := m.selectedSearchRow(); ok && row.kind == rowAlbum {
+			a := m.searchResults.Albums[row.idx]
+			return &a, false
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+// selectedArtist returns the artist under the cursor, and whether "i" on it
+// means remove (true, for the Favorite Artists tab, where every row is
+// already a favorite) or add (false, for a Search result — there is no
+// per-row favorited indicator there to toggle off from). Mirrors
+// selectedAlbum; see its doc for the add-vs-remove reasoning.
+func (m *Model) selectedArtist() (artist *tidal.Artist, remove bool) {
+	switch {
+	case m.section == SecFavArtists && m.cursor >= 0 && m.cursor < len(m.favArtists):
+		a := m.favArtists[m.cursor]
+		return &a, true
+	case m.section == SecSearch:
+		if row, ok := m.selectedSearchRow(); ok && row.kind == rowArtist {
+			a := m.searchResults.Artists[row.idx]
+			return &a, false
+		}
+		return nil, false
+	default:
+		return nil, false
 	}
 }
 

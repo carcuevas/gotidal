@@ -29,6 +29,10 @@ func (m Model) updateOverlay(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateCommandPalette(k)
 	case OverlayAddToPlaylist:
 		return m.updateAddToPlaylist(k)
+	case OverlayNewPlaylistName:
+		return m.updateNewPlaylistName(k)
+	case OverlayDeletePlaylist:
+		return m.updateDeletePlaylist(k)
 	case OverlayImportSpotify:
 		return m.updateImportSpotify(k)
 	case OverlayThemePicker:
@@ -59,6 +63,8 @@ func (m *Model) renderHelpOverlay(t Theme) string {
 		{"x / X", "Toggle shuffle / reshuffle queue"},
 		{"a / A", "Add to queue / add all"},
 		{"d / D", "Remove from queue / clear queue (Queue tab)"},
+		{"d", "Delete playlist (Playlists tab, asks first)"},
+		{"Ctrl+S", "Save the queue as a new playlist"},
 		{"K / J", "Move queue item up / down"},
 		{"F", "Toggle favorite"},
 		{"r", "Start radio from selection"},
@@ -66,8 +72,7 @@ func (m *Model) renderHelpOverlay(t Theme) string {
 		{"oo", "Select output device"},
 		{"oI", "Current song info"},
 		{"Ctrl+X", "Actions menu"},
-		{"Ctrl+S a", "Save queue as playlist"},
-		{"t", "Cycle theme"},
+		{"9, then t", "Cycle theme (Settings tab)"},
 		{"v", "Toggle meter: Peak / Cava spectrum"},
 		{": / Ctrl+P", "Command palette"},
 		{"/", "Search"},
@@ -117,10 +122,15 @@ func (m *Model) renderSongInfoOverlay(t Theme) string {
 }
 
 // updateAddToPlaylist handles the "save queue to existing playlist" picker.
+// updateAddToPlaylist drives the existing-playlist picker. Row 0 is always
+// "+ Create New Playlist…"; rows 1..N are m.playlists[0..N-1]. Which tracks
+// end up added — and how success is reported — depends on
+// m.addToPlaylistTracks: see its field doc.
 func (m Model) updateAddToPlaylist(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case keyEsc:
 		m.overlay = OverlayNone
+		m.addToPlaylistTracks = nil
 		return m, nil
 	case keyUp, "k":
 		if m.cursor > 0 {
@@ -128,43 +138,58 @@ func (m Model) updateAddToPlaylist(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case keyDown, "j":
-		if m.cursor < len(m.playlists)-1 {
+		if m.cursor < len(m.playlists) {
 			m.cursor++
 		}
 		return m, nil
 	case keyEnter:
-		if m.cursor >= 0 && m.cursor < len(m.playlists) {
-			pl := m.playlists[m.cursor]
+		if m.cursor == 0 {
+			m.openNewPlaylistPrompt(OverlayAddToPlaylist)
+			return m, nil
+		}
+		idx := m.cursor - 1
+		if idx < 0 || idx >= len(m.playlists) {
 			m.overlay = OverlayNone
-			cmd := m.saveQueueToExistingCmd(pl.UUID, pl.Title)
+			return m, nil
+		}
+		pl := m.playlists[idx]
+		m.overlay = OverlayNone
+		if m.addToPlaylistTracks != nil {
+			tracks := m.addToPlaylistTracks
+			m.addToPlaylistTracks = nil
+			cmd := m.addTracksToExistingPlaylistCmd(pl.UUID, pl.Title, tracks)
 			return m, cmd
 		}
-		m.overlay = OverlayNone
-		return m, nil
+		cmd := m.saveQueueToExistingCmd(pl.UUID, pl.Title)
+		return m, cmd
 	}
 	return m, nil
 }
 
-// renderAddToPlaylist renders the existing-playlist picker popup.
+// renderAddToPlaylist renders the playlist picker popup: a "+ Create New
+// Playlist…" row followed by the user's existing playlists.
 func (m *Model) renderAddToPlaylist(t Theme) string {
 	w := min(max(m.width/2, 34), 56)
 	innerW := w - 2
+	newRow := " + Create New Playlist…"
 	var rows []string
+	if m.cursor == 0 {
+		rows = append(rows, t.CmdItemSel.Width(innerW).Render(stripANSI(newRow)))
+	} else {
+		rows = append(rows, t.KeyBarKey.Render(truncateStr(newRow, innerW)))
+	}
 	for i := range m.playlists {
 		pl := m.playlists[i]
 		label := fmt.Sprintf(" ≡  %s  %s", pl.Title, t.RowFaint.Render(fmt.Sprintf("%d tracks", pl.NumberOfTracks)))
-		if i == m.cursor {
+		if i+1 == m.cursor {
 			rows = append(rows, t.CmdItemSel.Width(innerW).Render(stripANSI(fmt.Sprintf(" ≡  %s  %d tracks", pl.Title, pl.NumberOfTracks))))
 		} else {
 			rows = append(rows, truncateStr(label, innerW))
 		}
 	}
-	if len(rows) == 0 {
-		rows = append(rows, t.RowDim.Render(" No playlists — use “Save queue as playlist…”."))
-	}
 	h := min(len(rows)+2, m.height-4)
 	body := strings.Join(rows, "\n")
-	return renderPanel(t, "ADD QUEUE TO PLAYLIST", true, w, max(h, 4), body)
+	return renderPanel(t, "ADD TO PLAYLIST", true, w, max(h, 4), body)
 }
 
 // sheetAction is one row in the contextual action sheet.
@@ -188,6 +213,8 @@ const (
 	actGoArtist
 	actGoAlbum
 	actFavorite
+	actFavoriteArtist
+	actFavoriteAlbum
 	actCopyLink
 )
 
@@ -219,6 +246,8 @@ func (m *Model) actionSheetItems() []sheetAction {
 		sheetAction{icon: "♫", label: "Artist · " + artist, hint: "a", group: "GO TO", id: actGoArtist},
 		sheetAction{icon: "⊞", label: "Album · " + album, hint: "A", id: actGoAlbum},
 		sheetAction{icon: "♥", label: favLabel, hint: "f", group: "MORE", id: actFavorite},
+		sheetAction{icon: "♥", label: "Favorite artist · " + artist, id: actFavoriteArtist},
+		sheetAction{icon: "♥", label: "Favorite album · " + album, id: actFavoriteAlbum},
 		sheetAction{icon: "⎘", label: "Copy Tidal link", hint: "c", id: actCopyLink},
 	)
 	return items
@@ -290,8 +319,7 @@ func (m Model) runSheetAction(id actionID) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case actAddPlaylist:
-		// Wired in the playlist step; no-op placeholder for now.
-		return m, nil
+		return m.beginAddTrackToPlaylist(track)
 	case actRadio:
 		cmd := m.radioFrom(track)
 		return m, cmd
@@ -302,6 +330,18 @@ func (m Model) runSheetAction(id actionID) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case actFavorite:
 		cmd := m.toggleFavorite(track)
+		return m, cmd
+	case actFavoriteArtist:
+		if track.Artist.ID == 0 {
+			return m, nil
+		}
+		cmd := m.addFavoriteArtistCmd(track.Artist)
+		return m, cmd
+	case actFavoriteAlbum:
+		if track.Album.ID == 0 {
+			return m, nil
+		}
+		cmd := m.addFavoriteAlbumCmd(tidal.Album{ID: track.Album.ID, Title: track.Album.Title})
 		return m, cmd
 	case actCopyLink:
 		return m.copyTrackLink(track)

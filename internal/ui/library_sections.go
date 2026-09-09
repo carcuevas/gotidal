@@ -62,6 +62,14 @@ func (m Model) updatePlaylists(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd := m.enqueuePlaylistCmd(m.playlists[m.cursor])
 			return m, cmd
 		}
+	case "d":
+		// Delete the playlist on Tidal, after confirming — "d" removes the
+		// selected thing on the Queue tab too, so the key is consistent; the
+		// confirmation is not, and exists because this one is permanent.
+		if m.cursor >= 0 && m.cursor < len(m.playlists) {
+			m.confirmDeletePlaylist(m.playlists[m.cursor])
+			return m, nil
+		}
 	}
 	return m, nil
 }
@@ -143,21 +151,27 @@ func (m Model) updateFavArtists(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "h", keyLeft:
 		m.focusMain = false
+		return m, nil
 	case keyUp, "k":
 		if m.cursor > 0 {
 			m.cursor--
 		}
+		return m, nil
 	case keyDown, "j":
 		if m.cursor < len(m.favArtists)-1 {
 			m.cursor++
 		}
+		return m, nil
 	case keyEnter:
 		if m.cursor >= 0 && m.cursor < len(m.favArtists) {
 			a := m.favArtists[m.cursor]
 			return m.openArtistByID(a.ID, a.Name)
 		}
+		return m, nil
 	}
-	return m, nil
+	// Falls through for "i" (remove the selected artist from favorites — see
+	// selectedArtist) and anything else commonKeys handles generically.
+	return m.commonKeys(k)
 }
 
 // openArtistByID opens the artist drill-down for an explicit artist.
@@ -183,21 +197,27 @@ func (m Model) updateFavAlbums(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "h", keyLeft:
 		m.focusMain = false
+		return m, nil
 	case keyUp, "k":
 		if m.cursor > 0 {
 			m.cursor--
 		}
+		return m, nil
 	case keyDown, "j":
 		if m.cursor < len(m.favAlbums)-1 {
 			m.cursor++
 		}
+		return m, nil
 	case keyEnter:
 		if m.cursor >= 0 && m.cursor < len(m.favAlbums) {
 			cmd := m.openAlbum(m.favAlbums[m.cursor].ID)
 			return m, cmd
 		}
+		return m, nil
 	}
-	return m, nil
+	// Falls through for "i" (remove the selected album from favorites — see
+	// selectedAlbum) and anything else commonKeys handles generically.
+	return m.commonKeys(k)
 }
 
 // --- History ---

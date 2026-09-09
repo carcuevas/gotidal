@@ -14,7 +14,14 @@
 #include <libavutil/avutil.h>
 #include <libswresample/swresample.h>
 
+#include <errno.h>
+#include <stdlib.h>
 #include <stdint.h>
+
+// GOTIDAL_AVIO_ERROR is what avio_read_cb returns for a genuine read failure,
+// as opposed to AVERROR_EOF for a clean end of stream. Keeping the two apart
+// is what stops a dropped connection being mistaken for the end of a track.
+#define GOTIDAL_AVIO_ERROR AVERROR(EIO)
 
 // avio_read_cb is the AVIO read callback. opaque is a uintptr_t (cast to
 // void*) identifying the Go reader registered in the readerMap.

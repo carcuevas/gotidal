@@ -106,7 +106,7 @@ func (m *Model) createSpotifyPlaylistCmd(name string, ids []int) tea.Cmd {
 		if err := client.AddTracksToPlaylist(ctx, uuid, ids); err != nil {
 			return errMsg(err)
 		}
-		return queueSavedMsg{uuid: uuid, name: name, count: len(ids)}
+		return queueSavedMsg{uuid: uuid, name: name, count: len(ids), created: true}
 	}
 }
 

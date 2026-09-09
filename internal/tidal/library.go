@@ -327,6 +327,38 @@ func (c *Client) AddTracksToPlaylist(ctx context.Context, uuid string, trackIDs 
 	return nil
 }
 
+// DeletePlaylist permanently deletes one of the user's own playlists. Tidal
+// has no undo for this and no trash to restore from, so callers must confirm
+// with the user first.
+//
+// Unlike AddTracksToPlaylist this needs no ETag: the concurrency check guards
+// against clobbering someone else's concurrent edit to a playlist's contents,
+// which is moot when the playlist itself is going away.
+func (c *Client) DeletePlaylist(ctx context.Context, uuid string) error {
+	if strings.TrimSpace(uuid) == "" {
+		return errors.New("delete playlist: empty uuid")
+	}
+	params := url.Values{}
+	params.Set("countryCode", c.Session.CountryCode)
+
+	u := fmt.Sprintf("%s/playlists/%s?%s", BaseURL, url.PathEscape(uuid), params.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, http.NoBody)
+	if err != nil {
+		return err
+	}
+	resp, err := c.GetAuthClient(ctx).Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		b, _ := io.ReadAll(resp.Body)
+		return apiErr("delete playlist", resp.StatusCode, b)
+	}
+	return nil
+}
+
 // playlistETag fetches the playlist's current ETag, required by the mutation
 // endpoint's optimistic-concurrency check.
 func (c *Client) playlistETag(ctx context.Context, uuid string) (string, error) {

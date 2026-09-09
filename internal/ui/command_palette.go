@@ -201,14 +201,13 @@ func (m Model) beginSaveToExisting() (tea.Model, tea.Cmd) {
 	}
 	m.overlay = OverlayAddToPlaylist
 	m.cursor = 0
-	if len(m.playlists) == 0 {
-		return m, func() tea.Msg {
-			pls, err := m.client.GetUserPlaylists(m.ctx)
-			if err != nil {
-				return errMsg(err)
-			}
-			return playlistsMsg(pls)
-		}
+	// nil, not the previous invocation's leftovers: this flow always targets
+	// the live queue via m.tracks (see updateAddToPlaylist), not whatever a
+	// prior per-track "Add to playlist…" call left behind.
+	m.addToPlaylistTracks = nil
+	if len(m.playlists) == 0 || m.playlistsStale {
+		cmd := m.reloadPlaylistsCmd()
+		return m, cmd
 	}
 	return m, nil
 }

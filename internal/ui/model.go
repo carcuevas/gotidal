@@ -57,6 +57,8 @@ const (
 	OverlayActionSheet
 	OverlayDeviceSelect
 	OverlayAddToPlaylist
+	OverlayNewPlaylistName
+	OverlayDeletePlaylist
 	OverlayImportSpotify
 	OverlayHelp
 	OverlaySongInfo
@@ -92,6 +94,35 @@ type Model struct {
 	// Command palette overlay state.
 	paletteInput  textinput.Model
 	paletteCursor int
+
+	// Add-to-playlist overlay state. addToPlaylistTracks is nil for the
+	// original "save the whole live queue" flow (beginSaveToExisting), which
+	// keeps using m.tracks directly and reports success via queueSavedMsg
+	// (retagging the queue's own source) — unchanged. It is set to a specific
+	// track set by beginAddTrackToPlaylist (the per-track "Add to
+	// playlist…" action-sheet entry), in which case a plain confirmation
+	// toast is shown instead: adding one track to some playlist must not
+	// silently relabel whatever the live queue happens to be right now.
+	// newPlaylistInput is the name field for the "+ Create New Playlist…"
+	// row both flows share.
+	// newPlaylistReturn is the overlay Esc backs out to: the picker when the
+	// prompt was reached through it, OverlayNone when it was opened directly
+	// (Ctrl+S), where "go back" would otherwise raise a picker the user never
+	// asked for.
+	addToPlaylistTracks []tidal.Track
+	newPlaylistInput    textinput.Model
+	newPlaylistReturn   Overlay
+
+	// playlistsStale marks the cached playlist list as needing a refetch —
+	// see markPlaylistsStale. Set by every create/append/delete, cleared when
+	// a fresh list arrives.
+	playlistsStale bool
+
+	// deleteTarget is the playlist the confirmation overlay is asking about.
+	// Deleting is irreversible on Tidal's side, so the target is captured when
+	// the prompt opens rather than re-read from the cursor on confirm — the
+	// list must not be able to shift underneath a pending "yes".
+	deleteTarget *tidal.Playlist
 
 	// Spotify-import overlay state: the URL input, the resolved source, the
 	// matched/"not available" rows, the flow stage, and the list cursor.
@@ -248,6 +279,17 @@ type Model struct {
 
 	// Favorited track IDs (populated from GetFavorites; toggled by "f")
 	favorites map[int]bool
+
+	// currentRate is the sample rate the device negotiated for the playing
+	// track, 0 when nothing is playing. Read from Player.Format on each tick.
+	currentRate uint32
+
+	// dacModeActive is whether the currently-open device was opened in DAC
+	// (hw:) mode, from Player.AudioPath. Lets qualityBadge tell "not
+	// bit-perfect because PipeWire is the chosen output" apart from "not
+	// bit-perfect because the hw: negotiation itself had to fall back to
+	// plughw:" — only the latter is an actual format compromise.
+	dacModeActive bool
 
 	// playingIndex is the index in m.tracks of the track actually playing,
 	// or -1 when nothing is.
@@ -478,6 +520,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		lowDataMode:         lowDataMode,
 		interTrackSilenceMs: interTrackSilenceMs,
 		bitPerfect:          true,
+		dacModeActive:       true,
 		progress:            progressWithTheme(theme, 40),
 		mprisCh:             mprisCh,
 		favorites:           make(map[int]bool),
@@ -540,6 +583,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		bitPerfectMode: bitPerfectMode,
 		lowDataMode:    lowDataMode,
 		bitPerfect:     true,
+		dacModeActive:  true,
 		progress:       progressWithTheme(clientTint(palette).Theme(), 40),
 		favorites:      make(map[int]bool),
 		openURL:        openURL,
@@ -750,7 +794,7 @@ func (m *Model) playNextTrackFromPrefetchCmd(track tidal.Track, info tidal.Strea
 // PlayNext for a gapless transition). prefetched, when non-nil, is an
 // already-resolved stream (see playNextTrackFromPrefetchCmd) that skips the
 // GetStreamURL round-trip; otherwise it's resolved here.
-func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struct{}, error), prefetched *tidal.StreamInfo) tea.Cmd {
+func (m *Model) doPlayTrack(track tidal.Track, playFn func(player.StreamSource) (<-chan struct{}, error), prefetched *tidal.StreamInfo) tea.Cmd {
 	if m.clientMode {
 		mc := m.mprisClient
 		if m.localPlaylist && len(m.tracks) > 0 {
@@ -843,7 +887,20 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 			}
 			logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext, "quality", info.Quality)
 		}
-		done, err := playFn(info.URL)
+		src := player.StreamSource{
+			URLs:           info.URLs,
+			BitDepth:       info.BitDepth,
+			SampleRate:     info.SampleRate,
+			InitURLs:       info.InitURLs,
+			SegmentSeconds: info.SegmentSeconds,
+		}
+		// A fragmented stream cannot report its own length, so convert the
+		// manifest's duration into the sample count the player tracks
+		// position against.
+		if info.DurationSec > 0 && info.SampleRate > 0 {
+			src.TotalSamples = uint64(info.DurationSec * float64(info.SampleRate))
+		}
+		done, err := playFn(src)
 		if err != nil {
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
 			return playbackFailedMsg{err: err, gen: gen}
@@ -1095,6 +1152,14 @@ func (m Model) waitForContextCancel() tea.Cmd {
 		if m.store != nil {
 			m.store.Close()
 		}
+		// A SIGINT/SIGTERM exit skips quit()'s key-press path entirely, so it
+		// needs the same synchronous clear or a Sixel cover is left smeared
+		// on the shell prompt exactly as it was on a normal 'q' quit (see
+		// clearGraphicsOverlays). This closure was captured at Init(), before
+		// any interaction, but kitty/sixel/ttyOut are all set by the
+		// constructor rather than lazily, so the pointers here are the same
+		// ones later syncs mutate — not a stale nil snapshot.
+		m.clearGraphicsOverlays()
 		return tea.Quit()
 	}
 }
@@ -1195,7 +1260,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	_, isBarTick := msg.(barTickMsg)
 	sync := func() tea.Msg {
 		nm.syncKittyCover()
-		nm.syncSixelCover(!isBarTick)
+		if nm.syncSixelCover(!isBarTick) {
+			// Erasing the Sixel art blanks cells the text frame may already
+			// own by the time this command runs — see syncSixelCover's erase
+			// branch. A full repaint is the only way to put back whatever
+			// those blanks landed on, and it costs one redraw per navigation
+			// away from the cover, not per frame.
+			return tea.ClearScreen()
+		}
 		return nil
 	}
 	if cmd == nil {
@@ -1293,7 +1365,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case barTickMsg:
-		if m.cava != nil {
+		// A liveness check here too, not just on the once-a-second tickMsg:
+		// Configure() is cheap when the running instance is still alive (a
+		// mutex lock and a non-blocking channel check), so paying that ~30x/s
+		// is negligible, and it shortens the window a crashed/broken-pipe
+		// cava process can sit undetected from up to a second down to about
+		// one frame. Reported specifically after rapid seeking on a high
+		// bitrate track — likely several stream reopens in quick succession
+		// (see the interruptible-seek and read-ahead-prime work in
+		// internal/player) — so recovering fast here matters more than usual.
+		if m.cava != nil && !m.clientMode {
+			if rate, channels := m.player.Format(); rate > 0 {
+				m.cava.Configure(rate, channels, m.cavaTap)
+			}
 			m.cavaBars = m.cava.Bars(100)
 		}
 		if m.peak != nil {
@@ -1316,17 +1400,27 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Track the device actually opened: the plughw: fallback can
 			// engage mid-session (e.g. on resume), and the badge/device
 			// label must stop claiming bit-perfect output when it does.
-			m.activeDevice, m.bitPerfect = m.player.AudioPath()
+			// dacModeActive distinguishes that real compromise from PipeWire
+			// simply being the mode in use — see qualityBadge.
+			m.activeDevice, m.bitPerfect, m.dacModeActive = m.player.AudioPath()
 			logger.L.Debug("tick: progress state",
 				"currPos", m.currPos,
 				"duration", m.duration,
 				"isPlaying", m.isPlaying,
+				// The badge colours itself from these two; logging them is the
+				// only way to tell a wrong colour from wrong inputs.
+				"quality", m.currentQuality,
+				"rate", m.currentRate,
+				"bitPerfect", m.bitPerfect,
 			)
 			_ = m.store.SaveLastPosition(m.currPos)
 			m.pushState()
 			// Best-effort: (re)configure the meters for the current stream's
 			// format. A no-op when already running with this rate/channels.
 			rate, channels := m.player.Format()
+			// Kept for the quality badge, which colours itself by the rate
+			// actually reaching the device rather than the tier requested.
+			m.currentRate = rate
 			if m.cava != nil {
 				m.cava.Configure(rate, channels, m.cavaTap)
 			}
@@ -1599,6 +1693,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		_ = m.store.SavePlaylist(m.tracks)
 		m.pushState()
+		// Every producer of tracksMsg represents the user choosing something
+		// to listen to — an artist's "▶ Play all tracks"/"★ Top tracks",
+		// radio, an album, a mix — so it should load AND play, the way Enter
+		// on a saved playlist already does (see playPlaylistFrom), rather
+		// than silently repopulating the queue and leaving a second Enter
+		// press (on the new first track) as the only way to actually start
+		// it. Reported specifically for the artist rows, whose "▶"/"★" icons
+		// already implied playback was supposed to start.
+		if len(m.tracks) > 0 {
+			cmd := m.playTrackCmd(m.tracks[0])
+			return m, cmd
+		}
+		return m, nil
 
 	case favoriteMsg:
 		if msg.added {
@@ -1606,6 +1713,40 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			delete(m.favorites, msg.trackID)
 		}
+
+	case favoriteAlbumAddedMsg:
+		m.toast = fmt.Sprintf("✓ Added %q to favorite albums", msg.title)
+		return m, toastClearCmd()
+
+	case favoriteAlbumRemovedMsg:
+		for i := range m.favAlbums {
+			if m.favAlbums[i].ID == msg.albumID {
+				m.favAlbums = append(m.favAlbums[:i], m.favAlbums[i+1:]...)
+				break
+			}
+		}
+		if m.cursor >= len(m.favAlbums) {
+			m.cursor = max(len(m.favAlbums)-1, 0)
+		}
+		m.toast = fmt.Sprintf("✓ Removed %q from favorite albums", msg.title)
+		return m, toastClearCmd()
+
+	case favoriteArtistAddedMsg:
+		m.toast = fmt.Sprintf("✓ Added %q to favorite artists", msg.name)
+		return m, toastClearCmd()
+
+	case favoriteArtistRemovedMsg:
+		for i := range m.favArtists {
+			if m.favArtists[i].ID == msg.artistID {
+				m.favArtists = append(m.favArtists[:i], m.favArtists[i+1:]...)
+				break
+			}
+		}
+		if m.cursor >= len(m.favArtists) {
+			m.cursor = max(len(m.favArtists)-1, 0)
+		}
+		m.toast = fmt.Sprintf("✓ Removed %q from favorite artists", msg.name)
+		return m, toastClearCmd()
 
 	case openURLTracksMsg:
 		if len(msg) == 0 {
@@ -1630,6 +1771,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case playlistsMsg:
 		m.playlists = msg
+		sortPlaylists(m.playlists)
+		m.playlistsStale = false
 
 	case favArtistsMsg:
 		m.favArtists = msg
@@ -1675,7 +1818,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queuePlaylistUUID = msg.uuid
 		m.queueSource = "playlist:" + msg.name
 		m.queueDirty = false
+		m.applyPlaylistUpserted(msg.uuid, msg.name, msg.count, msg.created)
 		m.toast = fmt.Sprintf("✓ Saved %q — %d tracks", msg.name, msg.count)
+		return m, toastClearCmd()
+
+	case playlistTracksAddedMsg:
+		m.applyPlaylistUpserted(msg.uuid, msg.name, msg.count, msg.created)
+		m.toast = fmt.Sprintf("✓ Added to %q — %d track(s)", msg.name, msg.count)
+		return m, toastClearCmd()
+
+	case playlistDeletedMsg:
+		m.applyPlaylistDeleted(msg.uuid)
+		m.toast = fmt.Sprintf("✓ Deleted playlist %q", msg.name)
 		return m, toastClearCmd()
 
 	case enqueuePlaylistMsg:
@@ -1858,6 +2012,44 @@ func (m Model) View() string {
 // cells derived from the layout: the main pane begins after the sidebar + gap,
 // the panel border adds one column/row, and the cover box is the pane's first
 // inner rows.
+// clearGraphicsOverlays unconditionally erases any Kitty or Sixel image
+// currently on screen, synchronously — regardless of which tab is active.
+//
+// This exists for quit(). The normal reconcile (syncKittyCover/
+// syncSixelCover) only clears when coverBoxRect reports the art should not be
+// shown, which is still "shown" right up until the moment the program exits —
+// quitting doesn't change m.section. Worse, that reconcile runs as an async
+// tea.Cmd batched alongside whatever command triggered it (see the Update
+// wrapper), including tea.Quit itself, so there is no guarantee it completes
+// its terminal write before BubbleTea tears down the alternate screen.
+//
+// That race is what left a cover image permanently smeared over the shell
+// prompt after quitting: a Sixel image is rasterized directly into the
+// terminal's character grid with no separate compositing layer, so a
+// placement that lands after the alt screen is already disabled paints
+// straight onto the primary screen the shell owns, and nothing ever overwrites
+// those cells again until the user's own commands scroll past them. Kitty
+// placements are deleted by ID and don't fail this way, but are cleared here
+// too for symmetry, and so a placement isn't left wasting terminal memory.
+func (m *Model) clearGraphicsOverlays() {
+	if m.kitty != nil {
+		m.kitty.mu.Lock()
+		if m.kitty.drawnKey != "" {
+			m.writeGfx(kittyClearCover())
+			m.kitty.drawnKey = ""
+		}
+		m.kitty.mu.Unlock()
+	}
+	if m.sixel != nil {
+		m.sixel.mu.Lock()
+		if m.sixel.drawnKey != "" {
+			m.writeGfx(sixelClearBox(m.sixel.drawnCol, m.sixel.drawnRow, m.sixel.drawnCols, m.sixel.drawnRows))
+			m.sixel.drawnKey = ""
+		}
+		m.sixel.mu.Unlock()
+	}
+}
+
 // syncKittyCover reconciles the on-screen Kitty cover with what the current
 // model state says should be there, writing escapes straight to the TTY.
 //
@@ -1970,9 +2162,12 @@ func (m *Model) syncKittyCover() {
 //     paint back over whatever BubbleTea's frame just clobbered; it is false
 //     only for the high-frequency Cava animation tick, which never touches a
 //     line the art shares with anything else.
-func (m *Model) syncSixelCover(forceRedraw bool) {
+//
+// It reports whether it erased the image this call, which the caller must
+// turn into a full repaint — see the erase branch below.
+func (m *Model) syncSixelCover(forceRedraw bool) (erased bool) {
 	if !m.sixelSupported || m.ttyOut == nil {
-		return
+		return false
 	}
 	if m.sixel == nil {
 		m.sixel = &sixelState{}
@@ -1988,8 +2183,18 @@ func (m *Model) syncSixelCover(forceRedraw bool) {
 			ss.drawnKey = ""
 			ss.stale = false
 			m.writeGfx(out)
+			// The erase paints blanks over cells BubbleTea believes it owns,
+			// and this runs from a command — concurrently with the renderer
+			// writing the frame for the very Update that navigated away. Win
+			// that race and the blanks are harmlessly overpainted; lose it
+			// and they land on top of the new tab as a black rectangle that
+			// nothing repaints, since BubbleTea's line diff has no idea the
+			// screen no longer matches its model. Hence the erase is reported
+			// up so the caller can force a full repaint. (Kitty needs none of
+			// this: deleting a placement by ID leaves the text layer alone.)
+			return true
 		}
-		return
+		return false
 	}
 
 	// coverBoxDims chose cols/rows assuming a fixed cellAspect (2.0); the
@@ -2007,7 +2212,7 @@ func (m *Model) syncSixelCover(forceRedraw bool) {
 
 	moved := ss.drawnKey != encodeKey || ss.drawnCol != col || ss.drawnRow != row
 	if !moved && !ss.stale && !forceRedraw {
-		return // nothing changed and nothing else could have clobbered it
+		return erased // nothing changed and nothing else could have clobbered it
 	}
 
 	if ss.encodeKey != encodeKey {
@@ -2016,7 +2221,7 @@ func (m *Model) syncSixelCover(forceRedraw bool) {
 		ss.encodeKey = encodeKey
 	}
 	if ss.escape == "" {
-		return
+		return erased
 	}
 
 	var out strings.Builder
@@ -2031,11 +2236,12 @@ func (m *Model) syncSixelCover(forceRedraw bool) {
 	if !m.writeGfx(out.String()) {
 		ss.encodeKey = ""
 		ss.drawnKey = ""
-		return
+		return erased
 	}
 	ss.drawnKey = encodeKey
 	ss.drawnCol, ss.drawnRow, ss.drawnCols, ss.drawnRows = col, row, cols, rows
 	ss.stale = false
+	return false
 }
 
 // ttyFd returns the file descriptor backing ttyOut for ioctl queries
@@ -2073,7 +2279,15 @@ func (m *Model) writeGfx(s string) bool {
 // square AlbumArt box for the active tab, and whether it is shown at all. The
 // Queue tab places it at the top of the left column, below the tab bar.
 func (m *Model) coverBoxRect() (col, row, cols, rows int, ok bool) {
-	if m.section != SecQueue {
+	// showArtist is a transient overlay on top of whichever section opened
+	// it — most often Queue — and does not change m.section itself
+	// (openArtistFor saves it in prevSection to restore later). Checking
+	// m.section alone meant this kept reporting the Queue's art box as
+	// on-screen while the artist drill-down was actually showing, so a
+	// stale Sixel cover — which has no compositing layer, just cells it was
+	// rasterized into — stayed rendered on top of the drill-down's own,
+	// differently laid out screen instead of being cleared.
+	if m.section != SecQueue || m.showArtist {
 		return 0, 0, 0, 0, false
 	}
 	g := m.queueLayout(max(m.width, 1), m.bodyHeight())
@@ -2108,8 +2322,17 @@ func (m *Model) footerKeyBar(t Theme, w int) string {
 			{"↵", "Play"},
 			{"d", "Remove"},
 			{"D", "Clear"},
-			{"Ctrl+S a", "Save"},
+			{"Ctrl+S", "Save"},
 			{"Ctrl+X", "Actions"},
+			{":", "Command"},
+			{"q", "Quit"},
+		}
+	case SecPlaylists:
+		base = [][2]string{
+			{"j/k", "Move"},
+			{"↵", "Open"},
+			{"a", "Add to queue"},
+			{"d", "Delete"},
 			{":", "Command"},
 			{"q", "Quit"},
 		}
@@ -2143,6 +2366,10 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 		popup = m.renderCommandPalette(t)
 	case OverlayAddToPlaylist:
 		popup = m.renderAddToPlaylist(t)
+	case OverlayNewPlaylistName:
+		popup = m.renderNewPlaylistName(t)
+	case OverlayDeletePlaylist:
+		popup = m.renderDeletePlaylist(t)
 	case OverlayImportSpotify:
 		popup = m.renderImportSpotify(t)
 	case OverlayActionSheet:
