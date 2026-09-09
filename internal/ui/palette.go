@@ -78,6 +78,7 @@ type Theme struct {
 	RowSel       lipgloss.Style // selected row band
 	RowPlaying   lipgloss.Style // playing row title (cyan)
 	RowDim       lipgloss.Style // artist / metadata
+	RowAlbum     lipgloss.Style // album name (purple) — distinct from the artist's RowDim
 	RowFaint     lipgloss.Style // index, badge, dash
 	Fav          lipgloss.Style // favorite heart (rose)
 	LyricsActive lipgloss.Style // current synced-lyrics line: cyan text on the
@@ -149,6 +150,7 @@ func (p Palette) Theme() Theme {
 		RowSel:       lipgloss.NewStyle().Foreground(p.Fg).Background(p.BgSel),
 		RowPlaying:   lipgloss.NewStyle().Foreground(p.Cyan),
 		RowDim:       lipgloss.NewStyle().Foreground(p.FgDim),
+		RowAlbum:     lipgloss.NewStyle().Foreground(p.Purple),
 		RowFaint:     lipgloss.NewStyle().Foreground(p.FgFaint),
 		Fav:          lipgloss.NewStyle().Foreground(p.Rose),
 		LyricsActive: lipgloss.NewStyle().Foreground(p.Cyan).Background(p.BgSel),

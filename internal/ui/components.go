@@ -22,6 +22,7 @@ type rowOpts struct {
 	fav        bool
 	showIndex  bool
 	showArtist bool
+	showAlbum  bool // appends " — <album>" after the artist; no-op without showArtist
 	index      int
 	width      int
 	duration   int // seconds; 0 hides the duration column
@@ -72,6 +73,9 @@ func renderTrackRow(t Theme, tr tidal.Track, o rowOpts) string {
 	mid := titleStyle.Render(title)
 	if o.showArtist && tr.Artist.Name != "" {
 		mid += t.RowFaint.Render(" — ") + t.RowDim.Render(tr.Artist.Name)
+		if o.showAlbum && tr.Album.Title != "" {
+			mid += t.RowFaint.Render(" — ") + t.RowAlbum.Render(tr.Album.Title)
+		}
 	}
 	mid = truncateStr(mid, midRoom)
 

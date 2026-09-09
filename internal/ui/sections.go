@@ -35,6 +35,7 @@ func (m *Model) renderQueuePane(t Theme, w, h int) string {
 			fav:        m.favorites[tr.ID],
 			showIndex:  true,
 			showArtist: true,
+			showAlbum:  true,
 			index:      i + 1,
 			width:      innerW,
 			duration:   tr.Duration,

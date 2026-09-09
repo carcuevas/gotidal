@@ -152,6 +152,17 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			return m.gotoTab(tabEntries[n-1].section), true
 		}
 		return nil, true
+
+	case "D":
+		// Clearing the queue is meaningful from any tab, not just while
+		// looking at the Queue tab itself (unlike "d", single-item removal,
+		// which needs a cursor position within the queue list to mean
+		// anything).
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
+			return nil, false
+		}
+		m.clearQueue()
+		return m.syncQueueCover(), true
 	}
 	return nil, false
 }
@@ -507,13 +518,6 @@ func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		if m.section == SecQueue {
 			m.removeFromQueue(m.cursor)
-			cmd := m.syncQueueCover()
-			return m, cmd
-		}
-		return m, nil
-	case "D":
-		if m.section == SecQueue {
-			m.clearQueue()
 			cmd := m.syncQueueCover()
 			return m, cmd
 		}

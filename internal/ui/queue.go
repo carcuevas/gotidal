@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -48,8 +49,62 @@ func (m *Model) playListIntoQueue(list []tidal.Track, i int) tea.Cmd {
 	return m.playTrackCmd(track)
 }
 
-// clearQueue empties the live queue. Playback of the current track continues
-// (already buffered) but auto-advance has nothing to follow.
+// stopCurrentTrack halts actual playback (not just pausing) and clears the
+// now-playing state — used whenever the queue ends up with nothing left in
+// it, so the Lyrics/AlbumArt panes stop showing a track that's no longer
+// queued. A no-op in client mode (the daemon owns the player) or when
+// nothing is set as the current track.
+func (m *Model) stopCurrentTrack() {
+	if m.clientMode || m.currentTrack == nil {
+		return
+	}
+	if m.player != nil && !m.player.IsPaused() {
+		_ = m.player.Pause()
+	}
+	m.currentTrack = nil
+	m.isPlaying = false
+	m.stopped = false
+	m.currPos = 0
+	m.duration = 0
+	m.currentQuality = ""
+	// coverTrack()/renderAlbumArtPane's Kitty/Sixel path already stop
+	// showing anything once currentTrack is nil (coverBoxRect gates on it),
+	// but the ASCII/Unicode fallback path renders m.coverImage directly
+	// regardless — and renderLyricsPane renders m.lyricsState directly,
+	// same story. Neither is otherwise tied to currentTrack, so both need
+	// clearing here explicitly or they'd keep showing the just-stopped
+	// track's cover/lyrics.
+	m.coverImage = nil
+	m.coverCacheKey = ""
+	m.lyricsState = lyricsState{}
+	// Same reasoning as the cover/lyrics reset above: renderCavaBars/
+	// renderPeakBars draw whatever's in these fields directly, and without
+	// this they'd otherwise keep showing the last frame's bar heights frozen
+	// on screen (isPlaying=false stops the tick that would refresh them, but
+	// doesn't clear what's already there) rather than falling back to their
+	// "nothing playing" placeholder.
+	//
+	// Clearing m.cavaBars/peakBars alone isn't enough on its own: a
+	// barTickMsg already in flight when this runs fires right after and
+	// re-populates them from Cava/PeakMeter's own internal decaying state,
+	// which nothing has told to reset — overwriting the nil with a
+	// still-decaying (not yet zero) value, which then freezes there since
+	// isPlaying=false stops the tick loop from running again. Stop()ping
+	// both zeroes that internal state too (and, for Cava, tears down the
+	// now-pointless subprocess), so that in-flight tick reads back zeros.
+	if m.cava != nil {
+		m.cava.Stop()
+	}
+	if m.peak != nil {
+		m.peak.Stop()
+	}
+	m.cavaBars = nil
+	m.peakBars = nil
+	m.pushState()
+}
+
+// clearQueue empties the live queue and, if a track was actively playing,
+// stops it too (see stopCurrentTrack).
 func (m *Model) clearQueue() {
 	m.tracks = nil
 	m.tracksOrder = nil
@@ -59,11 +114,20 @@ func (m *Model) clearQueue() {
 	m.queuePlaylistUUID = ""
 	m.queueDirty = false
 	_ = m.store.SavePlaylist(m.tracks)
+	m.stopCurrentTrack()
 }
 
 // removeFromQueue drops the track at index i from the live queue, marks the
-// queue edited, and keeps the cursor in range. The currently-playing audio is
-// unaffected (it is already buffered); only the queue list changes.
+// queue edited, and keeps the cursor in range (landing on whatever shifted
+// into i, or the previous track if i was the last one — both already fall
+// out of the plain index-clamp below). The currently-playing audio is
+// otherwise unaffected (it is already buffered) — unless the removed track
+// was the one actually playing, in which case it's stopped too (see
+// stopCurrentTrack), whether or not the queue is now empty: playback
+// doesn't just carry on for a track no longer in the queue. The cursor's
+// new position (if any) still gets an artwork preview as normal — Queue's
+// existing hover-preview convention (coverTrack/hoveredTrack) already
+// handles that with no extra code needed here.
 func (m *Model) removeFromQueue(i int) {
 	if i < 0 || i >= len(m.tracks) {
 		return
@@ -83,8 +147,12 @@ func (m *Model) removeFromQueue(i int) {
 	if m.cursor >= len(m.tracks) {
 		m.cursor = max(len(m.tracks)-1, 0)
 	}
+	removedWasPlaying := m.currentTrack != nil && m.currentTrack.ID == removed.ID
 	m.queueDirty = true
 	_ = m.store.SavePlaylist(m.tracks)
+	if len(m.tracks) == 0 || removedWasPlaying {
+		m.stopCurrentTrack()
+	}
 }
 
 // moveQueueItem swaps the track at index i with its neighbor at i+delta
@@ -146,19 +214,45 @@ func (m *Model) loadQueueFromPlaylist(tracks []tidal.Track, pl tidal.Playlist) {
 	_ = m.store.SavePlaylist(m.tracks)
 }
 
-// queueHeader returns the queue panel's title and an optional colored status
-// suffix reflecting the hybrid model's state.
+// queueTotalDuration sums the (server-reported, not live-measured) durations
+// of every track currently in the queue, in seconds.
+func (m *Model) queueTotalDuration() float64 {
+	var total float64
+	for i := range m.tracks {
+		total += float64(m.tracks[i].Duration)
+	}
+	return total
+}
+
+// formatDuration renders seconds as H:MM:SS once it runs an hour or longer,
+// or M:SS otherwise (formatTime's own range) — unlike a single track, a
+// queue total routinely runs well past an hour.
+func formatDuration(seconds float64) string {
+	total := int(seconds)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+// queueHeader returns the queue panel's title — track count and total
+// duration, plus an optional colored status suffix reflecting the hybrid
+// model's state.
 func (m *Model) queueHeader(t Theme) string {
+	meta := fmt.Sprintf("%d tracks · %s", len(m.tracks), formatDuration(m.queueTotalDuration()))
 	name, isPlaylist := strings.CutPrefix(m.queueSource, "playlist:")
 	switch {
 	case isPlaylist && m.queueDirty:
-		return "QUEUE · " + name + " " + t.Amber.Render("· edited — S save")
+		return "QUEUE · " + name + " · " + meta + " " + t.Amber.Render("· edited — S save")
 	case isPlaylist:
-		return "QUEUE · " + name + " " + t.GreenT.Render("· synced")
+		return "QUEUE · " + name + " · " + meta + " " + t.GreenT.Render("· synced")
 	case m.queueSource == "radio":
-		return "QUEUE " + t.Amber.Render("· radio · unsaved — S save")
+		return "QUEUE · " + meta + " " + t.Amber.Render("· radio · unsaved — S save")
 	default:
-		return "QUEUE"
+		return "QUEUE · " + meta
 	}
 }
 

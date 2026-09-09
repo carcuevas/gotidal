@@ -220,6 +220,40 @@ func TestMaybePrefetchNext(t *testing.T) {
 	}
 }
 
+// TestQueueHeaderShowsTotalDuration verifies the Queue header includes the
+// track count and total duration (78+212+230s = 8:40 for the smoke model's
+// three tracks), not just the bare "QUEUE" title or playlist-sync status.
+func TestQueueHeaderShowsTotalDuration(t *testing.T) {
+	m := newSmokeModel()
+	got := m.queueHeader(m.theme)
+	for _, want := range []string{"3 tracks", "8:40"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("queueHeader() = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+// TestRenderTrackRowShowsAlbum verifies showAlbum appends the album title
+// after the artist (and only when showArtist is also set — an album name
+// with no artist to anchor it to would be a dangling " — ").
+func TestRenderTrackRowShowsAlbum(t *testing.T) {
+	th := paletteGoTidal.Theme()
+	tr := tidal.Track{
+		Title:  "Rot",
+		Artist: tidal.Artist{Name: "Lacey Sturm"},
+	}
+	tr.Album.Title = "Life Screams"
+	out := stripANSI(renderTrackRow(th, tr, rowOpts{showArtist: true, showAlbum: true, width: 80}))
+	if !strings.Contains(out, "Lacey Sturm") || !strings.Contains(out, "Life Screams") {
+		t.Errorf("renderTrackRow with showAlbum should show both artist and album, got %q", out)
+	}
+
+	out = stripANSI(renderTrackRow(th, tr, rowOpts{showArtist: false, showAlbum: true, width: 80}))
+	if strings.Contains(out, "Life Screams") {
+		t.Errorf("showAlbum without showArtist should not show the album, got %q", out)
+	}
+}
+
 // TestQueueHybridStates checks the queue header reflects synced/edited/unsaved
 // origins and that an enqueue marks the queue dirty.
 func TestQueueHybridStates(t *testing.T) {
@@ -562,18 +596,92 @@ func TestArtistAlbumDrill(t *testing.T) {
 	}
 }
 
-// TestClearQueue empties the queue.
+// TestClearQueue empties the queue and stops whatever was playing — an
+// empty queue has no "current track" left for Lyrics/AlbumArt to show.
 func TestClearQueue(t *testing.T) {
 	m := newSmokeModel()
 	if len(m.tracks) == 0 {
 		t.Fatal("precondition: queue should be non-empty")
 	}
+	m.currentTrack = &m.tracks[0]
+	m.isPlaying = true
+	m.coverImage = image.NewRGBA(image.Rect(0, 0, 8, 8))
+	m.coverCacheKey = "some-cover-uuid"
+	m.lyricsState = lyricsState{trackID: m.tracks[0].ID, plain: "some lyrics"}
+	m.cavaBars = []int{50, 60, 70}
+	m.peakBars = []int{40, 45}
 	m.clearQueue()
 	if len(m.tracks) != 0 || len(m.tracksOrder) != 0 {
 		t.Errorf("clearQueue should empty the queue, got %d/%d", len(m.tracks), len(m.tracksOrder))
 	}
 	if m.queueSource != "" || m.queueDirty {
 		t.Errorf("clearQueue should reset queue origin")
+	}
+	if m.currentTrack != nil {
+		t.Errorf("clearQueue should stop the current track, currentTrack is still set")
+	}
+	if m.isPlaying {
+		t.Errorf("clearQueue should stop playback")
+	}
+	if m.coverImage != nil || m.coverCacheKey != "" {
+		t.Errorf("clearQueue should clear the stale cover — AlbumArt's ASCII fallback renders m.coverImage directly, not gated on currentTrack")
+	}
+	if m.lyricsState.trackID != 0 || m.lyricsState.plain != "" {
+		t.Errorf("clearQueue should clear the stale lyrics — the Lyrics pane renders m.lyricsState directly, not gated on currentTrack, got %+v", m.lyricsState)
+	}
+	if m.cavaBars != nil || m.peakBars != nil {
+		t.Errorf("clearQueue should clear the stale meter bars — got cavaBars=%v peakBars=%v", m.cavaBars, m.peakBars)
+	}
+}
+
+// TestRemoveLastTrackStopsPlayback verifies that removing the only
+// remaining track (rather than clearing the whole queue via "D") also stops
+// playback — same reasoning as TestClearQueue.
+func TestRemoveLastTrackStopsPlayback(t *testing.T) {
+	m := newSmokeModel()
+	m.tracks = m.tracks[:1]
+	m.tracksOrder = m.tracks
+	m.currentTrack = &m.tracks[0]
+	m.isPlaying = true
+	m.removeFromQueue(0)
+	if len(m.tracks) != 0 {
+		t.Fatalf("expected an empty queue, got %d tracks", len(m.tracks))
+	}
+	if m.currentTrack != nil {
+		t.Errorf("removing the last track should stop the current track, currentTrack is still set")
+	}
+	if m.isPlaying {
+		t.Errorf("removing the last track should stop playback")
+	}
+}
+
+// TestRemovePlayingTrackFromMiddleStopsPlayback verifies that removing the
+// currently-playing track stops playback even when other tracks remain in
+// the queue afterward (not just when it empties the queue entirely) —
+// playback shouldn't just carry on for a track no longer in the queue.
+func TestRemovePlayingTrackFromMiddleStopsPlayback(t *testing.T) {
+	m := newSmokeModel()
+	if len(m.tracks) < 3 {
+		t.Fatal("smoke model needs at least three tracks for this test")
+	}
+	// An independent copy, not &m.tracks[1] — aliasing directly into the
+	// slice's backing array would let removeFromQueue's in-place shift
+	// silently corrupt what currentTrack points to before this test's own
+	// check runs. doPlayTrack (the real, only production call site) always
+	// copies this way too: m.currentTrack = &track from a value parameter.
+	playing := m.tracks[1]
+	m.currentTrack = &playing
+	m.isPlaying = true
+	m.cursor = 1
+	m.removeFromQueue(1)
+	if len(m.tracks) != 2 {
+		t.Fatalf("expected 2 tracks remaining, got %d", len(m.tracks))
+	}
+	if m.currentTrack != nil {
+		t.Errorf("removing the playing track should stop it, currentTrack is still set")
+	}
+	if m.isPlaying {
+		t.Errorf("removing the playing track should stop playback, even with tracks still queued")
 	}
 }
 
