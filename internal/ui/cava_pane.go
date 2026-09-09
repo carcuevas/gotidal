@@ -23,7 +23,7 @@ const numCavaBars = 80
 // premultiplied values, so >>8 down-converts to the usual 0-255 range).
 func colorRGB8(c lipgloss.TerminalColor) (r, g, b uint8) {
 	rr, gg, bb, _ := c.RGBA()
-	return uint8(rr >> 8), uint8(gg >> 8), uint8(bb >> 8) //nolint:gosec // intentional truncation, not overflow
+	return uint8(rr >> 8), uint8(gg >> 8), uint8(bb >> 8)
 }
 
 // blendColor linearly interpolates between two colors at t∈[0,1] (0=a, 1=b),

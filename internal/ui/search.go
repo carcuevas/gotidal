@@ -125,7 +125,8 @@ func (m Model) updateSearchKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// enqueuePlaylistCmd. Distinct from the track-level "a" above since a
 	// playlist row has no single track for commonKeys' selectedTrack to find.
 	if ok && row.kind == rowPlaylist && k.String() == "a" {
-		return m, m.enqueuePlaylistCmd(m.searchResults.Playlists[row.idx])
+		cmd := m.enqueuePlaylistCmd(m.searchResults.Playlists[row.idx])
+		return m, cmd
 	}
 	return m, nil
 }

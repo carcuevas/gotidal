@@ -22,6 +22,11 @@ const (
 	keyRight = "right"
 )
 
+// errClientModeUnavailable is shown by every player-affecting toggle that
+// only makes sense against a local player (client mode forwards playback to
+// a remote daemon instead) — hoisted to a constant (goconst).
+const errClientModeUnavailable = "Not available in client mode — the daemon owns the player"
+
 // handleKey is the top-level key dispatcher. Order of precedence:
 //  1. the second key of a pending two-key sequence (rmpc's g/o/Ctrl+S chains)
 //  2. global keys (quit, tab switch, command palette, help, ...)
@@ -622,7 +627,7 @@ const interTrackSilenceDefaultMs = 2000
 // silence-based auto-track-detection; see Player.SetInterTrackSilenceMs.
 func (m Model) toggleInterTrackSilence() (tea.Model, tea.Cmd) {
 	if m.clientMode {
-		m.errText = "Not available in client mode — the daemon owns the player"
+		m.errText = errClientModeUnavailable
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 	}
 	if m.interTrackSilenceMs == 0 {
@@ -646,7 +651,7 @@ func (m Model) toggleInterTrackSilence() (tea.Model, tea.Cmd) {
 // effect starting with the next track, not the one currently playing.
 func (m Model) toggleBitPerfectMode() (tea.Model, tea.Cmd) {
 	if m.clientMode {
-		m.errText = "Not available in client mode — the daemon owns the player"
+		m.errText = errClientModeUnavailable
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 	}
 	m.bitPerfectMode = !m.bitPerfectMode
@@ -670,7 +675,7 @@ func (m Model) toggleBitPerfectMode() (tea.Model, tea.Cmd) {
 // starting with the next track, not the one currently playing.
 func (m Model) toggleLowDataMode() (tea.Model, tea.Cmd) {
 	if m.clientMode {
-		m.errText = "Not available in client mode — the daemon owns the player"
+		m.errText = errClientModeUnavailable
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 	}
 	m.lowDataMode = !m.lowDataMode

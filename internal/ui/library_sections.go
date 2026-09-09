@@ -59,7 +59,8 @@ func (m Model) updatePlaylists(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Add the whole playlist to the queue directly, without first
 		// drilling into its detail view — see enqueuePlaylistCmd.
 		if m.cursor >= 0 && m.cursor < len(m.playlists) {
-			return m, m.enqueuePlaylistCmd(m.playlists[m.cursor])
+			cmd := m.enqueuePlaylistCmd(m.playlists[m.cursor])
+			return m, cmd
 		}
 	}
 	return m, nil
