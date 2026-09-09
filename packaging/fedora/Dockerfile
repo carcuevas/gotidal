@@ -44,7 +44,7 @@ RUN case "${TARGETARCH}" in \
         -tags staticav \
         -trimpath \
         -buildmode=pie \
-        -ldflags "-s -w -linkmode=external -X main.version=v${VERSION}" \
+        -ldflags "-s -w -linkmode=external -X github.com/carcuevas/gotidal/internal/buildinfo.version=v${VERSION}" \
         -o /out/gotidal \
         ./cmd/gotidal
 

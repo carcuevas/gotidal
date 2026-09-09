@@ -12,16 +12,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/sys/unix"
 
+	"github.com/carcuevas/gotidal/internal/buildinfo"
 	"github.com/carcuevas/gotidal/internal/logger"
 	"github.com/carcuevas/gotidal/internal/mpris"
 	"github.com/carcuevas/gotidal/internal/store"
 	"github.com/carcuevas/gotidal/internal/tidal"
 	"github.com/carcuevas/gotidal/internal/ui"
 )
-
-// version is the build version, injected at release time via
-// -ldflags "-X main.version=v<X.Y.Z>". It is "dev" for local builds.
-var version = "dev"
 
 // readPassphrase reads a passphrase from stdin with echo disabled.
 func readPassphrase(_ context.Context, prompt string) ([]byte, error) {
@@ -144,7 +141,7 @@ func dispatch() error {
 		runLogout()
 		return nil
 	case "version", "--version", "-v":
-		fmt.Println("gotidal " + version)
+		fmt.Println("gotidal " + buildinfo.Version())
 		return nil
 	default:
 		// Treat os.Args[1] as an optional tidal:// or https://tidal.com/ URL

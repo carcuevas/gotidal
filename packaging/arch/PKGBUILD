@@ -34,7 +34,7 @@ build() {
         -trimpath \
         -buildmode=pie \
         -mod=mod \
-        -ldflags "-linkmode=external -X main.version=v$pkgver" \
+        -ldflags "-linkmode=external -X github.com/carcuevas/gotidal/internal/buildinfo.version=v$pkgver" \
         -o gotidal \
         ./cmd/gotidal
 }

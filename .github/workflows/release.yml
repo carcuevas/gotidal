@@ -70,7 +70,7 @@ jobs:
         run: bash packaging/build-static-ffmpeg.sh /tmp/gotidal-ffmpeg-static
 
       - name: Build
-        run: go build -tags staticav -ldflags="-s -w -X main.version=${{ needs.prepare.outputs.tag }}" -o gotidal-linux-${{ matrix.goarch }} ./cmd/gotidal
+        run: go build -tags staticav -ldflags="-s -w -X github.com/carcuevas/gotidal/internal/buildinfo.version=${{ needs.prepare.outputs.tag }}" -o gotidal-linux-${{ matrix.goarch }} ./cmd/gotidal
 
       - uses: actions/upload-artifact@v5
         with:

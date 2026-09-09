@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/carcuevas/gotidal/internal/buildinfo"
 )
 
 // settingsRowCount is the number of selectable rows in the Settings tab: the
@@ -227,6 +229,12 @@ func (m *Model) renderSettingsList(t Theme, w, h int) string {
 	if m.themeCursor == 4 {
 		cursorRow = len(rows) - 1
 	}
+
+	// Which build is running, so it can be read off the screen instead of
+	// having to quit and run `gotidal -v`. Deliberately a footer rather than a
+	// row: there is nothing to activate, so the cursor must not stop on it —
+	// settingsRowCount stays at the five selectable rows above.
+	rows = append(rows, "", t.RowFaint.Render(" gotidal "+buildinfo.Version()))
 
 	return renderListPanel(t, "SETTINGS", m.focusMain, rows, cursorRow, w, h)
 }
