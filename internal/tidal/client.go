@@ -2,11 +2,11 @@ package tidal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/browser"
@@ -29,6 +29,18 @@ type Client struct {
 	Session   *Session
 	Oauth     *oauth2.Config
 	Transport http.RoundTripper // optional; overrides the base transport (used in tests)
+
+	// OnTokenRefresh, when set, is called with the updated session every time
+	// oauth2 mints a new access token, so the caller can write it back to the
+	// secrets store. Without it a refresh lives only in memory: the stored
+	// refresh token is never replaced, and `gotidal logout` ends up revoking a
+	// credential that is no longer the live one. Set by cmd/gotidal, which
+	// owns the store; this package deliberately does not import it.
+	OnTokenRefresh func(Session)
+
+	// mu guards Session's token fields against the concurrent Token() calls
+	// oauth2.Transport makes from every in-flight request.
+	mu sync.Mutex
 }
 
 type Session struct {
@@ -87,7 +99,7 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 		VerificationURI string `json:"verificationUri"`
 		Interval        int    `json:"interval"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&da); err != nil {
+	if err := decodeJSON(resp.Body, &da); err != nil {
 		return nil, err
 	}
 
@@ -129,7 +141,7 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 		UserID      int    `json:"userId"`
 		CountryCode string `json:"countryCode"`
 	}
-	if err := json.NewDecoder(sResp.Body).Decode(&sessionInfo); err != nil {
+	if err := decodeJSON(sResp.Body, &sessionInfo); err != nil {
 		// Fallback to token extras if session endpoint fails
 		if user, ok := token.Extra("user").(map[string]any); ok {
 			if id, ok := user["id"].(float64); ok {
@@ -167,7 +179,45 @@ func (c *Client) TokenSource(ctx context.Context) oauth2.TokenSource {
 		TokenType:    c.Session.TokenType,
 		Expiry:       c.Session.Expiry,
 	}
-	return c.Oauth.TokenSource(ctx, t)
+	return &persistingTokenSource{c: c, src: c.Oauth.TokenSource(ctx, t)}
+}
+
+// persistingTokenSource records every newly minted token back into the
+// client's session (and through OnTokenRefresh, onto disk).
+type persistingTokenSource struct {
+	c   *Client
+	src oauth2.TokenSource
+}
+
+func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
+	tok, err := p.src.Token()
+	if err != nil {
+		return nil, err
+	}
+
+	p.c.mu.Lock()
+	changed := p.c.Session.AccessToken != tok.AccessToken ||
+		(tok.RefreshToken != "" && p.c.Session.RefreshToken != tok.RefreshToken)
+	if changed {
+		p.c.Session.AccessToken = tok.AccessToken
+		// Tidal may or may not rotate the refresh token; an empty value in the
+		// response means "keep the one you have", so don't overwrite with "".
+		if tok.RefreshToken != "" {
+			p.c.Session.RefreshToken = tok.RefreshToken
+		}
+		if tok.TokenType != "" {
+			p.c.Session.TokenType = tok.TokenType
+		}
+		p.c.Session.Expiry = tok.Expiry
+	}
+	updated := *p.c.Session
+	cb := p.c.OnTokenRefresh
+	p.c.mu.Unlock()
+
+	if changed && cb != nil {
+		cb(updated)
+	}
+	return tok, nil
 }
 
 // RevokeToken revokes the given token via the Tidal OAuth2 revocation endpoint.

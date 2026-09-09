@@ -351,6 +351,19 @@ func (p *mediaPlayer2Player) send(e Event) {
 }
 
 // --- io.gotidal.App ----------------------------------------------------------
+//
+// Trust boundary: these methods are exported on the *session* bus, so only
+// processes running as the same user can call them — the same boundary MPRIS
+// itself relies on, and the same one that already lets a peer read
+// ~/.config/gotidal directly. They are deliberately not sender-validated:
+// client mode (a second `gotidal` invocation talking to the running instance)
+// is the intended caller, and there is no stable way to tell it apart from any
+// other same-user process.
+//
+// What that means for the handlers below: treat every argument as untrusted
+// text, not as a privileged instruction. URLs and playlist JSON are validated
+// and sanitized downstream (tidal.checkID, sanitize.Strings) rather than
+// trusted because they arrived over D-Bus.
 
 type tidalApp struct {
 	ch    chan<- Event

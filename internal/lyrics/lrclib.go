@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/carcuevas/gotidal/internal/sanitize"
 )
 
 // Line is one timestamped line of synced lyrics.
@@ -84,7 +86,10 @@ func FetchSynced(ctx context.Context, artist, title, album string, durationSec i
 	if body.SyncedLyrics != "" {
 		return &Lyrics{Found: true, Lines: ParseLRC(body.SyncedLyrics)}, nil
 	}
-	return &Lyrics{Found: true, Plain: body.PlainLyrics}, nil
+	// LRCLIB is unauthenticated — anyone can publish lyrics for any track — so
+	// treat everything it returns as hostile text bound for a terminal.
+	// ParseLRC sanitizes the synced path; the plain blob keeps its line breaks.
+	return &Lyrics{Found: true, Plain: sanitize.Multiline(body.PlainLyrics)}, nil
 }
 
 // lrcLineRE matches one or more leading "[mm:ss.xx]" timestamp tags on an LRC
@@ -105,7 +110,8 @@ func ParseLRC(raw string) []Line {
 		if tags == "" {
 			continue
 		}
-		text := strings.TrimSpace(ln[len(tags):])
+		// One rendered row per Line, so newlines go along with the escapes.
+		text := sanitize.Text(strings.TrimSpace(ln[len(tags):]))
 		for _, m := range lrcTagRE.FindAllStringSubmatch(tags, -1) {
 			minutes, _ := strconv.Atoi(m[1])
 			seconds, _ := strconv.Atoi(m[2])

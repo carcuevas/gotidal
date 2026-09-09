@@ -27,6 +27,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/carcuevas/gotidal/internal/sanitize"
 )
 
 // SourceTrack is one track read from a Spotify source.
@@ -118,14 +120,26 @@ func Resolve(ctx context.Context, hc *http.Client, raw string) (*Source, error) 
 	if !ok {
 		return nil, errors.New("not a recognised Spotify track or playlist URL")
 	}
+	var (
+		src *Source
+		err error
+	)
 	switch kind {
 	case "track":
-		return resolveTrack(ctx, hc, id)
+		src, err = resolveTrack(ctx, hc, id)
 	case "playlist":
-		return resolvePlaylist(ctx, hc, id)
+		src, err = resolvePlaylist(ctx, hc, id)
 	default:
 		return nil, fmt.Errorf("unsupported Spotify entity %q", kind)
 	}
+	if err != nil {
+		return nil, err
+	}
+	// Titles and artist names come from a remote page and are rendered into a
+	// terminal that executes escape sequences; strip them here, at the single
+	// exit both paths share. See internal/sanitize.
+	sanitize.Strings(src)
+	return src, nil
 }
 
 // resolveTrack reads a single track's title via the official oEmbed endpoint.

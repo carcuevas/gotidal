@@ -40,34 +40,45 @@ int av_open(av_decoder_t *d, void *opaque) {
     d->fmt_ctx->flags |= AVFMT_FLAG_CUSTOM_IO;
 
     int rc = avformat_open_input(&d->fmt_ctx, NULL, NULL, NULL);
-    if (rc < 0) return rc;
+    if (rc < 0) {
+        // On failure avformat_open_input frees the context and NULLs it,
+        // orphaning the AVIO context we attached — av_close reaches the AVIO
+        // through fmt_ctx->pb, so it can no longer find it. Free it here.
+        av_free(avio->buffer);
+        avio_context_free(&avio);
+        return rc;
+    }
 
     rc = avformat_find_stream_info(d->fmt_ctx, NULL);
-    if (rc < 0) return rc;
+    if (rc < 0) goto fail;
 
     rc = av_find_best_stream(d->fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-    if (rc < 0) return rc;
+    if (rc < 0) goto fail;
     d->stream_idx = rc;
 
     AVStream *st = d->fmt_ctx->streams[d->stream_idx];
     const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
-    if (!codec) return AVERROR_DECODER_NOT_FOUND;
+    if (!codec) { rc = AVERROR_DECODER_NOT_FOUND; goto fail; }
 
     d->codec_ctx = avcodec_alloc_context3(codec);
-    if (!d->codec_ctx) return AVERROR(ENOMEM);
+    if (!d->codec_ctx) { rc = AVERROR(ENOMEM); goto fail; }
 
     rc = avcodec_parameters_to_context(d->codec_ctx, st->codecpar);
-    if (rc < 0) return rc;
+    if (rc < 0) goto fail;
 
     rc = avcodec_open2(d->codec_ctx, codec, NULL);
-    if (rc < 0) return rc;
+    if (rc < 0) goto fail;
 
     // swresample: codec output → S32LE interleaved, same rate/channels.
     d->swr = swr_alloc();
-    if (!d->swr) return AVERROR(ENOMEM);
+    if (!d->swr) { rc = AVERROR(ENOMEM); goto fail; }
 
-    AVChannelLayout layout;
-    av_channel_layout_copy(&layout, &d->codec_ctx->ch_layout);
+    // Zero-initialised: av_channel_layout_copy uninits the destination first,
+    // which frees dst->u.map for a custom layout. On an uninitialised stack
+    // struct that is a free() of whatever the stack happened to hold.
+    AVChannelLayout layout = {0};
+    rc = av_channel_layout_copy(&layout, &d->codec_ctx->ch_layout);
+    if (rc < 0) goto fail;
 
     av_opt_set_chlayout  (d->swr, "in_chlayout",    &d->codec_ctx->ch_layout, 0);
     av_opt_set_int       (d->swr, "in_sample_rate",  d->codec_ctx->sample_rate, 0);
@@ -78,12 +89,12 @@ int av_open(av_decoder_t *d, void *opaque) {
     av_channel_layout_uninit(&layout);
 
     rc = swr_init(d->swr);
-    if (rc < 0) return rc;
+    if (rc < 0) goto fail;
 
     d->pkt       = av_packet_alloc();
     d->frame     = av_frame_alloc();
     d->resampled = av_frame_alloc();
-    if (!d->pkt || !d->frame || !d->resampled) return AVERROR(ENOMEM);
+    if (!d->pkt || !d->frame || !d->resampled) { rc = AVERROR(ENOMEM); goto fail; }
 
     d->sample_rate = (uint32_t)d->codec_ctx->sample_rate;
     d->channels    = (uint8_t)d->codec_ctx->ch_layout.nb_channels;
@@ -107,6 +118,13 @@ int av_open(av_decoder_t *d, void *opaque) {
                                  * d->sample_rate);
     }
     return 0;
+
+    // Past avformat_open_input every resource is reachable from *d, so the
+    // normal teardown path frees them. The Go side treats a failed av_open as
+    // "nothing was allocated" and never calls av_close itself.
+fail:
+    av_close(d);
+    return rc;
 }
 
 int av_read_samples(av_decoder_t *d, int32_t **out_buf, int *out_count) {
@@ -127,7 +145,13 @@ int av_read_samples(av_decoder_t *d, int32_t **out_buf, int *out_count) {
         continue;
 
     resample:;
-        d->resampled->ch_layout   = d->codec_ctx->ch_layout;
+        // A struct assignment here would alias the layout's heap allocation
+        // (u.map, for a custom layout): av_frame_unref below would free it
+        // while codec_ctx still owns and later frees the same pointer.
+        // av_channel_layout_copy uninits the destination first, so this is
+        // also correct on the second and later passes through the loop.
+        rc = av_channel_layout_copy(&d->resampled->ch_layout, &d->codec_ctx->ch_layout);
+        if (rc < 0) { av_frame_unref(d->frame); return rc; }
         d->resampled->sample_rate = d->frame->sample_rate;
         d->resampled->format      = AV_SAMPLE_FMT_S32;
 
@@ -157,9 +181,17 @@ void av_close(av_decoder_t *d) {
     if (d->codec_ctx) avcodec_free_context(&d->codec_ctx);
     if (d->fmt_ctx) {
         AVIOContext *pb = d->fmt_ctx->pb;
+        // AVFMT_FLAG_CUSTOM_IO means avformat_close_input leaves pb alone.
         avformat_close_input(&d->fmt_ctx);
-        if (pb) avio_context_free(&pb);
+        if (pb) {
+            // avio_context_free does not free the buffer, and FFmpeg may have
+            // replaced the one we supplied — free whatever it holds now, or
+            // every track played leaks AVIO_BUF_SIZE.
+            av_freep((void *)&pb->buffer);
+            avio_context_free(&pb);
+        }
     }
+    memset(d, 0, sizeof(*d));
 }
 
 void av_strerr(int rc, char *buf, int sz) {

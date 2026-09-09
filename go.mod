@@ -1,6 +1,6 @@
 module github.com/carcuevas/gotidal
 
-go 1.26.4
+go 1.26.8
 
 require (
 	github.com/atotto/clipboard v0.1.4
@@ -13,12 +13,13 @@ require (
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/mattn/go-sixel v0.0.12
 	github.com/mdp/qrterminal/v3 v3.2.1
+	github.com/muesli/termenv v0.16.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/image v0.37.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sys v0.40.0
-	golang.org/x/term v0.39.0
+	golang.org/x/sys v0.45.0
+	golang.org/x/term v0.43.0
 )
 
 require (
@@ -42,11 +43,10 @@ require (
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )

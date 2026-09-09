@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/carcuevas/gotidal/internal/sanitize"
+
 	"github.com/docker/secrets-engine/store"
 	"github.com/docker/secrets-engine/store/keychain"
 	"github.com/docker/secrets-engine/store/posixage"
@@ -322,10 +324,25 @@ func (s *SecretsStore) GetCachedLyrics(trackID int) (raw string, found, ok bool)
 		if err := json.Unmarshal(v, &entry); err != nil {
 			return nil //nolint:nilerr // a corrupt cache entry is treated as a cache miss
 		}
-		raw, found, ok = entry.Raw, entry.Found, true
+		// Cached LRCLIB text: keep line breaks, drop escapes.
+		raw, found, ok = sanitize.Multiline(entry.Raw), entry.Found, true
 		return nil
 	})
 	return raw, found, ok
+}
+
+// decodeCached unmarshals a cached value and strips terminal control
+// characters from every string in it (see internal/sanitize).
+//
+// The cache is on-disk state that outlives an upgrade: entries written before
+// remote text was sanitized at the API boundary are still here, and a hostile
+// title cached once would otherwise keep being rendered on every later run.
+func decodeCached(v []byte, target any) error {
+	if err := json.Unmarshal(v, target); err != nil {
+		return err
+	}
+	sanitize.Strings(target)
+	return nil
 }
 
 func (s *SecretsStore) SaveDevice(hwName string) error {
@@ -648,7 +665,7 @@ func (s *SecretsStore) LoadPlaylist(target any) error {
 		if v == nil {
 			return nil
 		}
-		return json.Unmarshal(v, target)
+		return decodeCached(v, target)
 	})
 }
 
@@ -686,7 +703,7 @@ func (s *SecretsStore) LoadHistory(target any) error {
 		if v == nil {
 			return nil
 		}
-		return json.Unmarshal(v, target)
+		return decodeCached(v, target)
 	})
 }
 
@@ -726,7 +743,7 @@ func (s *SecretsStore) LoadSearchResults(query string, target any) (bool, error)
 			return nil
 		}
 		found = true
-		return json.Unmarshal(v, target)
+		return decodeCached(v, target)
 	})
 	return found, err
 }

@@ -2,7 +2,6 @@ package tidal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -51,7 +50,7 @@ func (c *Client) SearchAll(ctx context.Context, query string) (*SearchResults, e
 	}
 
 	var res searchAllResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 	for i := range res.Tracks.Items {
@@ -120,7 +119,7 @@ func (c *Client) getFavorites(ctx context.Context, kind string, limit int, targe
 		body, _ := io.ReadAll(resp.Body)
 		return apiErr("get favorite "+kind, resp.StatusCode, body)
 	}
-	return json.NewDecoder(resp.Body).Decode(target)
+	return decodeJSON(resp.Body, target)
 }
 
 // AddFavoriteArtist adds an artist to the user's favorites.
@@ -212,7 +211,7 @@ func (c *Client) GetUserPlaylists(ctx context.Context) ([]Playlist, error) {
 	var res struct {
 		Items []Playlist `json:"items"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 	return res.Items, nil
@@ -239,7 +238,7 @@ func (c *Client) GetPlaylistTracks(ctx context.Context, uuid string) ([]Track, e
 	var res struct {
 		Items []Track `json:"items"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 	for i := range res.Items {
@@ -272,7 +271,7 @@ func (c *Client) CreatePlaylist(ctx context.Context, title, description string) 
 	var res struct {
 		UUID string `json:"uuid"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return "", err
 	}
 	if res.UUID == "" {

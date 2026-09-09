@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/carcuevas/gotidal/internal/sanitize"
 )
 
 // pactlTimeout bounds every pactl invocation below — these run on the UI's
@@ -41,7 +43,14 @@ func ListPipeWireSinks() ([]DeviceInfo, error) {
 		if longName == "" {
 			longName = name
 		}
-		devices = append(devices, DeviceInfo{HWName: name, CardName: name, LongName: longName})
+		// HWName is passed back to pactl as an argument, so it keeps its exact
+		// bytes; the two display fields are stripped of escapes because sink
+		// descriptions come from device-supplied strings.
+		devices = append(devices, DeviceInfo{
+			HWName:   name,
+			CardName: sanitize.Text(name),
+			LongName: sanitize.Text(longName),
+		})
 		name, desc = "", ""
 	}
 

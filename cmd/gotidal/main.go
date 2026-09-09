@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/sys/unix"
 
+	"github.com/carcuevas/gotidal/internal/logger"
 	"github.com/carcuevas/gotidal/internal/mpris"
 	"github.com/carcuevas/gotidal/internal/store"
 	"github.com/carcuevas/gotidal/internal/tidal"
@@ -95,6 +97,16 @@ func loadSession(ctx context.Context) (*tidal.Client, *store.SecretsStore, tidal
 		client.Session = &session
 		fmt.Printf("Restored session for User %d (Country: %s)\n", session.UserID, session.CountryCode)
 	}
+
+	// Persist refreshed tokens. Without this the rotated refresh token only
+	// ever exists in memory, so the copy on disk goes stale and `logout`
+	// revokes the wrong credential.
+	//nolint:contextcheck // store.SecretsStore.SaveSession does not accept a context; nothing to thread
+	client.OnTokenRefresh = func(s tidal.Session) {
+		if err := vault.SaveSession(s); err != nil {
+			logger.L.Error("failed to persist refreshed session", "err", err)
+		}
+	}
 	return client, vault, session
 }
 
@@ -136,8 +148,17 @@ func dispatch() error {
 		return nil
 	default:
 		// Treat os.Args[1] as an optional tidal:// or https://tidal.com/ URL
-		// (passed by the OS when the user clicks "Open in desktop app").
-		return runTUI(os.Args[1])
+		// (passed by the OS when the user clicks "Open in desktop app"). It is
+		// the same untrusted input `play` receives, so it gets the same check;
+		// anything that isn't URL-shaped is a plain search query and passes
+		// through untouched.
+		arg := os.Args[1]
+		if strings.Contains(arg, "://") {
+			if err := validatePlayURL(arg); err != nil {
+				return err
+			}
+		}
+		return runTUI(arg)
 	}
 }
 
