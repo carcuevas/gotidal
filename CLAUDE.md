@@ -18,6 +18,7 @@ Entry point. Handles signal setup, session load/restore from the secrets store, 
 Tidal API client.
 - `client.go` — OAuth2 device-flow authentication, token refresh, authenticated HTTP client
 - `api.go` — REST calls: favorites, search, track lookup, stream URL (quality ladder: HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW), mixes, mix tracks, artist albums/top-tracks/all-tracks
+- Daily Mixes use the v1 API: `GET /v1/pages/my_collection_my_mixes` for the list, `GET /v1/mixes/{mixId}/items` for a mix's tracks (fully populated, one request). The v2 `openapi.tidal.com/v2/userRecommendations` resource was removed by Tidal and now 404s — do not reintroduce it. Video mixes and non-`track` items are filtered out, since the player cannot decode video
 
 ### `internal/player`
 Bit-perfect FLAC playback via CGO + libasound.
@@ -43,7 +44,7 @@ Persistent storage.
 BubbleTea TUI model (Model/Update/View). Keybindings and layout follow rmpc
 (github.com/mierak/rmpc): a numbered top tab bar (`Section`, 9 entries in
 `tabEntries`, `1`-`9` / `Tab` / `gt`/`gT` to switch), not a sidebar.
-- `keys.go`: global keys (`handleGlobalKey`), two-key prefix chains (`g`/`o`/`Ctrl+S` via `pendingKey` + `handlePendingKey`), generic list nav (`gg`/`G`/half-page/page via `activeCursorRef`), and per-tab handlers
+- `keys.go`: global keys (`handleGlobalKey`), two-key prefix chains (`g`/`o` via `pendingKey` + `handlePendingKey`), generic list nav (`gg`/`G`/half-page/page via `activeCursorRef`), and per-tab handlers
 - Queue tab: left column is AlbumArt (square — see `coverBoxDims` in `layout.go`) / Cava (`cava_pane.go`) / Lyrics (`lyrics_pane.go`), right column is the track list (`queueLayout` in `sections.go` degrades gracefully as space runs out)
 - AlbumArt rendering: Kitty graphics protocol (`termgfx.go`, `KittySupported()` — ghostty/kitty/WezTerm) or Sixel (`sixel.go`, `SixelSupported()` — foot, detected via `TERM=foot` or, since foot.ini commonly overrides TERM, an ancestor-process walk via `ancestorIsFoot()`/`procParent()`) or Unicode block-art as the fallback (`coverart.go`). **foot supports Sixel, not Kitty graphics** — confirmed by grepping foot's own upstream changelog for every "kitty" mention: all of them are the kitty *keyboard* protocol or OSC-99 notifications, never graphics. Don't re-add foot to `KittySupported()`. Sixel bakes its target pixel size into the encoded data (no Kitty-style "upload once, place many times"), so `syncSixelCover` re-encodes on any geometry change, not just a cover change; `cellPixelSize()` queries the real terminal cell size via `TIOCGWINSZ` to encode at the correct pixel size instead of relying on the terminal to rescale
 - Scrollable track and mix lists with a visible window helper

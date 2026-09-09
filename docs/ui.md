@@ -46,9 +46,15 @@ always stays legible.
     line (see [docs/lyrics.md](lyrics.md))
 
   See *The queue* below for the hybrid queue/playlist model.
-- **2 · Playlists** — a two-column view: the playlist index on the left, the
+- **2 · Playlists** — a two-column view: the playlist index on the left
+  (sorted alphabetically, case-insensitively — Tidal's own endpoint returns
+  them in date order, which moves a playlist every time it's edited), the
   selected playlist's tracks on the right. `Enter`/`l` opens a playlist;
-  `Enter` in the detail loads it into the queue and starts playing.
+  `Enter` in the detail loads it into the queue and starts playing. `a` adds a
+  whole playlist to the queue without opening it, and `d` deletes the selected
+  playlist. Deletion goes through a confirmation prompt that only `y` accepts
+  (deliberately not `Enter`, the key that opens a playlist in the list behind
+  it) — Tidal deletes for good, with no undo and no trash to restore from.
 - **3 · Artists** / **4 · Albums** / **5 · Songs** — your Tidal favorites,
   each its own tab. From an artist you can drill into an album to see its
   tracks.
@@ -66,12 +72,14 @@ but it remembers where its contents came from, shown in the panel title:
 | State | Header | Meaning |
 | ----- | ------ | ------- |
 | Loaded from a saved playlist, untouched | `QUEUE · <name> · synced` (green) | matches the saved playlist |
-| Loaded from a playlist, then edited | `QUEUE · <name> · edited — Ctrl+S a save` (amber) | you've added/reordered tracks |
-| Built from radio or ad-hoc adds | `QUEUE · radio · unsaved — Ctrl+S a save` (amber) | nothing saved yet |
+| Loaded from a playlist, then edited | `QUEUE · <name> · edited — Ctrl+S save` (amber) | you've added/reordered tracks |
+| Built from radio or ad-hoc adds | `QUEUE · radio · unsaved — Ctrl+S save` (amber) | nothing saved yet |
 
 Editing the queue (play-next, add-to-queue) **never** rewrites the saved
-playlist it came from. Press `Ctrl+S a` (or use the command palette's
-*Save queue as playlist…*) to commit the current queue as a brand-new playlist;
+playlist it came from. Press `Ctrl+S` (or run the command palette's
+*Save queue as playlist…*) to commit the current queue as a brand-new
+playlist — either way it asks for a name first, pre-suggesting one you can
+accept with a single Enter;
 *Save queue to existing playlist…* appends it to one you already have. A green
 toast confirms the save.
 
@@ -140,8 +148,11 @@ option that follows your terminal's own colors.
 
 Moving the cursor with `j`/`k` **previews** the scheme by re-theming the whole
 interface instantly; `Enter` applies and saves it, and `Esc` cancels the preview
-and reverts. The chosen theme persists across launches. `t` cycles the theme
-from anywhere in the app.
+and reverts. The chosen theme persists across launches. On the Settings tab, `t` is a
+shortcut that cycles straight to the next scheme without opening the picker.
+It is scoped to that tab on purpose: as a global binding it fired while typing
+into text prompts (naming a new playlist, for instance) and changed the theme
+mid-word.
 
 ## The CAVA visualizer
 
