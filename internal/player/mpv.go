@@ -19,6 +19,7 @@ import (
 	"unsafe" //nolint:gocritic // dupImport false positive: cgo "C" pseudo-package aliases unsafe
 
 	"github.com/carcuevas/gotidal/internal/logger"
+	"github.com/carcuevas/gotidal/internal/sanitize"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -84,10 +85,14 @@ func ListDevices() ([]DeviceInfo, error) {
 		if longName == "" {
 			longName = cardName
 		}
+		// The card and long names in /proc/asound/cards come from the device's
+		// own USB string descriptors — remote text by any reasonable
+		// definition — and are rendered into the device picker, so they get
+		// the same escape-stripping as anything off the network.
 		devices = append(devices, DeviceInfo{
 			HWName:   fmt.Sprintf("hw:%d,0", cardNum),
-			CardName: cardName,
-			LongName: longName,
+			CardName: sanitize.Text(cardName),
+			LongName: sanitize.Text(longName),
 		})
 	}
 	return devices, nil
@@ -487,6 +492,46 @@ func (p *Player) reserveDevice(ctx context.Context, dacMode bool, device string)
 	return reserveALSADevice(ctx, cardNum)
 }
 
+// packPCM writes avcodec's always-S32LE samples into dst in the format ALSA
+// actually negotiated: bps bytes per sample, little-endian, each sample first
+// shifted right by shift (see sampleShift) so only the bits the device carries
+// remain. vol scales the sample; 1.0 skips the multiply entirely.
+//
+// The per-sample byte count must follow bps rather than always being 4: on
+// S16_LE (bps 2) or S24_3LE (bps 3) — the formats alsa.c prefers for 16- and
+// 24-bit sources — writing a fixed 4 bytes at a stride of bps overlaps every
+// earlier sample and runs past the end of the last one's slot, which is an
+// out-of-range panic on the very first buffer.
+//
+// dst must be at least len(samples)*bps long.
+func packPCM(dst []byte, samples []int32, bps, shift int, vol float64) {
+	for i, s := range samples {
+		if vol != 1.0 {
+			s = int32(float64(s) * vol)
+		}
+		// The two's-complement bit pattern is exactly what the device wants.
+		v := uint32(s >> shift)
+		off := i * bps
+		for b := range bps {
+			dst[off+b] = byte(v >> (8 * b))
+		}
+	}
+}
+
+// sampleShift returns how far right to shift avcodec's always-S32LE samples
+// so that only the bits the negotiated ALSA format actually carries remain in
+// the low bytes: 0 for S32_LE, 8 for S24_3LE/S24_LE, 16 for S16_LE. The shift
+// is arithmetic, so the sign is preserved — which is also exactly what
+// S24_LE's sign-extended 4-byte slot expects. Falls back to the container
+// width if the driver didn't report significant bits.
+func sampleShift(ah *alsaHandle) int {
+	sbits := ah.significantBits
+	if sbits <= 0 || sbits > 32 {
+		sbits = min(ah.bytesPerSample*8, 32)
+	}
+	return 32 - sbits
+}
+
 type alsaHandle struct {
 	pcm             *C.snd_pcm_t
 	device          string // ALSA device string actually opened (may differ from the requested one on plughw: fallback)
@@ -764,6 +809,23 @@ func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
 
 	atomic.StoreUint32(&p.paused, 0)
 
+	// The loop may have hit its handoff timeout in the window between the
+	// liveness check above and this send. awaitNextURL re-reads the channel
+	// once on timeout to catch that, but it cannot catch a send that lands
+	// after it has already given up — so confirm the loop is still there. If
+	// it has gone, take the URL back and start a fresh loop, which gives the
+	// caller a done channel that will actually close instead of a track that
+	// silently never plays.
+	select {
+	case <-loopDone:
+		_, _ = p.takeQueuedURL()
+		p.mu.Lock()
+		p.transitionDoneCh = nil
+		p.mu.Unlock()
+		return p.Play(url)
+	default:
+	}
+
 	return newDone, nil
 }
 
@@ -845,7 +907,16 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	// transitions close the body they are replacing. This defer is a backstop
 	// that closes whichever response is current when the function returns, so
 	// no path leaks the body. Closing an already-closed http body is a no-op.
-	defer func() { _ = resp.Body.Close() }()
+	//
+	// The nil check is load-bearing: openStream returns (nil, nil, err) on
+	// failure, so a reopen that fails mid-playback — a dropped connection on
+	// a seek or a track transition — leaves resp nil, and an unguarded
+	// resp.Body here would panic the whole player instead of stopping it.
+	defer func() {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+	}()
 
 	logger.L.Debug("HTTP response",
 		"status", resp.StatusCode,
@@ -921,6 +992,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	}()
 
 	bps := ah.bytesPerSample
+	shift := sampleShift(ah)
 
 	// streamLoop runs the decode→ALSA pipeline for the current HTTP stream.
 	// Returns (seekTarget, true, false) if a seek was requested,
@@ -979,17 +1051,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				n := len(samples) / int(channels)
 				buf := make([]byte, len(samples)*bps)
 				vol := math.Float64frombits(atomic.LoadUint64(&p.volumeBits))
-				for i, s := range samples {
-					if vol != 1.0 {
-						s = int32(float64(s) * vol)
-					}
-					off := i * bps
-					// avcodec always outputs S32LE; ALSA is opened as S32LE (bits=32).
-					buf[off] = byte(s)
-					buf[off+1] = byte(s >> 8)
-					buf[off+2] = byte(s >> 16)
-					buf[off+3] = byte(s >> 24)
-				}
+				packPCM(buf, samples, bps, shift, vol)
 				// Best-effort tee for the CAVA visualizer — copies the buffer
 				// so the visualizer goroutine can hold onto it after this one
 				// reuses/writes buf; never blocks the audio path.
@@ -1190,104 +1252,145 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 
 		// Wait for the UI to provide the next track URL, or exit if the
 		// playlist is over / playback is cancelled.
-		select {
-		case nextURL := <-p.nextURLCh:
-			logger.L.Debug("transitioning to next track")
-			url = nextURL
-
-			stream.Close()
-			_ = resp.Body.Close()
-			resp, stream, err = openStream(ctx, nextURL)
-			if err != nil {
-				logger.L.Error("failed to open next stream", "err", err)
-				return false
-			}
-
-			newInfo := stream.Info
-
-			// Reopen the ALSA device if the audio format changed, or if the
-			// device is not currently open at all.
-			//
-			// ah.pcm is nil whenever streamLoop returned from the paused
-			// state: pausing calls closeALSA (which nils the pointer) and
-			// releases the reservation, and skipping or cancelling while
-			// paused returns without ever reacquiring. Reusing the handle in
-			// that case dereferences a NULL pcm inside libasound on the first
-			// snd_pcm_drop/writei — a SIGSEGV that takes the whole process
-			// down. Reaching this branch on a nil handle is the normal
-			// pause→skip path, not an error.
-			formatChanged := newInfo.SampleRate != sampleRate ||
-				newInfo.NChannels != channels ||
-				newInfo.BitsPerSample != bits
-			deviceClosed := ah == nil || ah.pcm == nil
-
-			sampleRate = newInfo.SampleRate
-			channels = newInfo.NChannels
-			bits = newInfo.BitsPerSample
-
-			if formatChanged || deviceClosed {
-				logger.L.Debug("reopening ALSA for next track",
-					"formatChanged", formatChanged,
-					"deviceClosed", deviceClosed,
-					"rate", sampleRate, "ch", channels, "bits", bits)
-				closeALSA(ah)
-				// reacquireALSA closes over device/channels/sampleRate/bits,
-				// which were just reassigned above, so it already reserves and
-				// opens with the new format — no second closure needed. It also
-				// reclaims the D-Bus reservation, which the pause released.
-				newAH, newRel, raErr := reacquireALSA()
-				if raErr != nil {
-					logger.L.Error("reopen ALSA failed for next track", "err", raErr)
-					_ = resp.Body.Close()
-					return false
-				}
-				releaseReservation()
-				ah = newAH
-				releaseReservation = newRel
-				bps = ah.bytesPerSample
-			}
-
-			writeSilence(ah, p.interTrackSilenceMs.Load(), channels, bps)
-
-			p.muInfo.Lock()
-			p.sampleRate = sampleRate
-			p.channels = channels
-			p.bitsPerSample = bits
-			p.totalSamples = newInfo.NSamples
-			if newInfo.NSamples > 0 {
-				p.hintDuration = 0
-			}
-			p.muInfo.Unlock()
-
-			atomic.StoreUint64(&p.samplesPlayed, 0)
-			// Drain any pending seek so the new track starts from the beginning.
-			select {
-			case <-p.seekCh:
-			default:
-			}
-
-			// Install the new doneCh created by PlayNext().
-			p.mu.Lock()
-			p.doneCh = p.transitionDoneCh
-			p.transitionDoneCh = nil
-			p.currentURL = nextURL
-			p.mu.Unlock()
-
-			logger.L.Debug("audio stream (next track)",
-				"rate", sampleRate,
-				"channels", channels,
-				"bits", bits,
-				"samples", newInfo.NSamples,
-			)
-			continue // play the next stream
-
-		case <-ctx.Done():
-			return true
-
-		case <-time.After(5 * time.Second):
-			logger.L.Debug("no next track within timeout, closing ALSA")
+		nextURL, ok := p.awaitNextURL(ctx)
+		if !ok {
 			return true
 		}
+		logger.L.Debug("transitioning to next track")
+		url = nextURL
+
+		stream.Close()
+		_ = resp.Body.Close()
+		resp, stream, err = openStream(ctx, nextURL)
+		if err != nil {
+			logger.L.Error("failed to open next stream", "err", err)
+			return false
+		}
+
+		newInfo := stream.Info
+
+		// Reopen the ALSA device if the audio format changed, or if the
+		// device is not currently open at all.
+		//
+		// ah.pcm is nil whenever streamLoop returned from the paused
+		// state: pausing calls closeALSA (which nils the pointer) and
+		// releases the reservation, and skipping or cancelling while
+		// paused returns without ever reacquiring. Reusing the handle in
+		// that case dereferences a NULL pcm inside libasound on the first
+		// snd_pcm_drop/writei — a SIGSEGV that takes the whole process
+		// down. Reaching this branch on a nil handle is the normal
+		// pause→skip path, not an error.
+		formatChanged := newInfo.SampleRate != sampleRate ||
+			newInfo.NChannels != channels ||
+			newInfo.BitsPerSample != bits
+		deviceClosed := ah == nil || ah.pcm == nil
+
+		sampleRate = newInfo.SampleRate
+		channels = newInfo.NChannels
+		bits = newInfo.BitsPerSample
+
+		if formatChanged || deviceClosed {
+			logger.L.Debug("reopening ALSA for next track",
+				"formatChanged", formatChanged,
+				"deviceClosed", deviceClosed,
+				"rate", sampleRate, "ch", channels, "bits", bits)
+			closeALSA(ah)
+			// reacquireALSA closes over device/channels/sampleRate/bits,
+			// which were just reassigned above, so it already reserves and
+			// opens with the new format — no second closure needed. It also
+			// reclaims the D-Bus reservation, which the pause released.
+			newAH, newRel, raErr := reacquireALSA()
+			if raErr != nil {
+				logger.L.Error("reopen ALSA failed for next track", "err", raErr)
+				_ = resp.Body.Close()
+				return false
+			}
+			releaseReservation()
+			ah = newAH
+			releaseReservation = newRel
+			bps = ah.bytesPerSample
+			shift = sampleShift(ah)
+		}
+
+		writeSilence(ah, p.interTrackSilenceMs.Load(), channels, bps)
+
+		p.muInfo.Lock()
+		p.sampleRate = sampleRate
+		p.channels = channels
+		p.bitsPerSample = bits
+		p.totalSamples = newInfo.NSamples
+		if newInfo.NSamples > 0 {
+			p.hintDuration = 0
+		}
+		p.muInfo.Unlock()
+
+		atomic.StoreUint64(&p.samplesPlayed, 0)
+		// Drain any pending seek so the new track starts from the beginning.
+		select {
+		case <-p.seekCh:
+		default:
+		}
+
+		// Install the new doneCh created by PlayNext().
+		p.mu.Lock()
+		p.doneCh = p.transitionDoneCh
+		p.transitionDoneCh = nil
+		p.currentURL = nextURL
+		p.mu.Unlock()
+
+		logger.L.Debug("audio stream (next track)",
+			"rate", sampleRate,
+			"channels", channels,
+			"bits", bits,
+			"samples", newInfo.NSamples,
+		)
+		// Round the loop to play the next stream.
+	}
+}
+
+// nextURLTimeout bounds how long the playback loop holds the ALSA device (and
+// its D-Bus reservation) open waiting for the UI to hand over the next
+// track's stream URL after the current one ends.
+const nextURLTimeout = 5 * time.Second
+
+// awaitNextURL waits for the UI to supply the next track's stream URL. It
+// reports false when playback is cancelled, or when the handoff window closes
+// with nothing arriving — in which case the caller should shut the device down.
+//
+// The second, non-blocking read after the timeout is what makes the handoff
+// race-free. PlayNext checks this loop is still alive and only then sends on
+// nextURLCh, so a send landing in the same instant the timer fires would
+// otherwise be picked up by neither: Go would choose the timeout case, the
+// loop would exit, and the URL would sit unread in the buffered channel. The
+// track would never start and the done channel PlayNext handed its caller
+// would never close, leaving the UI showing a track playing with no audio and
+// no completion — a wedge that only quitting clears.
+func (p *Player) awaitNextURL(ctx context.Context) (string, bool) {
+	select {
+	case u := <-p.nextURLCh:
+		return u, true
+	case <-ctx.Done():
+		return "", false
+	case <-time.After(nextURLTimeout):
+		if u, ok := p.takeQueuedURL(); ok {
+			logger.L.Debug("next-track URL arrived as the handoff window closed")
+			return u, true
+		}
+		logger.L.Debug("no next track within timeout, closing ALSA")
+		return "", false
+	}
+}
+
+// takeQueuedURL takes a next-track URL if one is already sitting in the
+// channel, without blocking. Used both to rescue a send that landed as the
+// handoff window closed and to reclaim one PlayNext queued for a loop that
+// turned out to have already exited.
+func (p *Player) takeQueuedURL() (string, bool) {
+	select {
+	case u := <-p.nextURLCh:
+		return u, true
+	default:
+		return "", false
 	}
 }
 

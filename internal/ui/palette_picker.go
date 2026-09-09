@@ -146,11 +146,28 @@ func swatch(p Palette) string {
 // renderSettingsActionRow renders a simple icon+label+value row (the device
 // and silence-gap rows), matching the theme rows' selection-band styling.
 func renderSettingsActionRow(t Theme, w int, icon, label, value string, selected bool) string {
+	return renderSettingsRow(t, w, icon, label, value, selected, false)
+}
+
+// renderSettingsRow is renderSettingsActionRow with a disabled state, for a
+// setting another setting currently owns (bit-perfect quality under Data
+// Saver). A disabled row still takes the cursor and still highlights when
+// selected — pressing Enter on it explains why it won't change rather than
+// silently doing nothing — but its text is faint so the list shows at a
+// glance which rows are live.
+func renderSettingsRow(t Theme, w int, icon, label, value string, selected, disabled bool) string {
 	plain := " " + icon + " " + label
 	pad := max(w-lipgloss.Width(plain)-lipgloss.Width(value)-1, 1)
 	row := plain + strings.Repeat(" ", pad) + value
 	if selected {
-		return lipgloss.NewStyle().Background(t.P.BgSel).Width(w).Render(row)
+		st := lipgloss.NewStyle().Background(t.P.BgSel).Width(w)
+		if disabled {
+			st = st.Foreground(t.P.FgFaint)
+		}
+		return st.Render(row)
+	}
+	if disabled {
+		return t.RowFaint.Render(truncateStr(row, w))
 	}
 	return t.RowDim.Render(truncateStr(row, w))
 }
@@ -177,7 +194,12 @@ func (m *Model) renderSettingsList(t Theme, w, h int) string {
 	if m.bitPerfectMode {
 		bitPerfectLabel = "On (DAC)"
 	}
-	rows = append(rows, renderSettingsActionRow(t, innerW, "◆", "Bit-perfect quality", bitPerfectLabel, m.themeCursor == 1))
+	// Data Saver forces PipeWire, so while it is on this row reports what it
+	// is locked to and why instead of a value the user cannot change.
+	if m.lowDataMode {
+		bitPerfectLabel = "Off — locked by Data Saver"
+	}
+	rows = append(rows, renderSettingsRow(t, innerW, "◆", "Bit-perfect quality", bitPerfectLabel, m.themeCursor == 1, m.lowDataMode))
 	if m.themeCursor == 1 {
 		cursorRow = len(rows) - 1
 	}

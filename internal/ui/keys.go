@@ -143,6 +143,15 @@ func (m *Model) handleGlobalKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		m.pendingKey = k.String()
 		return nil, true
 
+	case "/":
+		// Advertised in the help overlay and the keybind list, but never
+		// actually bound. Jumps to the Search tab, which focuses the input
+		// (see selectSection).
+		if m.searchInput.Focused() || m.overlay != OverlayNone {
+			return nil, false
+		}
+		return m.gotoTab(SecSearch), true
+
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		if m.searchInput.Focused() || m.overlay != OverlayNone {
 			return nil, false
@@ -382,7 +391,7 @@ func (m Model) selectSection(sec Section) (tea.Model, tea.Cmd) {
 	m.section = sec
 	m.showArtist = false
 	m.focusMain = true
-	m.cursor = 0
+	m.resetSectionCursor()
 	if sec == SecPlaylists {
 		m.detailFocus = false
 	}
@@ -658,6 +667,15 @@ func (m Model) toggleBitPerfectMode() (tea.Model, tea.Cmd) {
 		m.errText = errClientModeUnavailable
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 	}
+	// Data Saver owns this setting while it is on: it forces PipeWire output
+	// (see toggleLowDataMode), so letting bit-perfect be switched back on
+	// here would leave the two settings contradicting each other and the
+	// Settings row showing "On (DAC)" for output that isn't. Turning Data
+	// Saver off hands the setting back, restored to its previous value.
+	if m.lowDataMode {
+		m.toast = "Bit-perfect quality is locked while Data Saver is on"
+		return m, toastClearCmd()
+	}
 	m.bitPerfectMode = !m.bitPerfectMode
 	m.player.SetDACMode(m.bitPerfectMode)
 	_ = m.store.SaveBitPerfectMode(m.bitPerfectMode)
@@ -735,7 +753,7 @@ func (m *Model) cycleShuffle() {
 		m.shuffleMode = ShuffleOff
 	}
 	m.applyShuffle()
-	m.cursor = 0
+	m.resetSectionCursor()
 }
 
 // enqueueAllVisible appends every track in the tab's current list to the
@@ -813,7 +831,7 @@ func (m Model) skipNext() (tea.Model, tea.Cmd) {
 	if len(m.tracks) == 0 {
 		return m, nil
 	}
-	m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+	m.shufflePlayed = append(m.shufflePlayed, m.advanceBase())
 	next := m.nextIndex()
 	if next < 0 {
 		return m, nil

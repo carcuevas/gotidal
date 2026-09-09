@@ -8,16 +8,58 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/carcuevas/gotidal/internal/logger"
+	"github.com/carcuevas/gotidal/internal/sanitize"
 )
 
 // ErrNotFound is returned by GetTrack when the API responds with 404.
 var ErrNotFound = errors.New("not found")
+
+// ErrInvalidID is returned when a resource ID is not in the shape Tidal uses.
+var ErrInvalidID = errors.New("invalid Tidal resource ID")
+
+// resourceIDRE describes every ID shape Tidal actually issues: decimal for
+// tracks and albums, a UUID or hex string for playlists and mixes.
+var resourceIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// checkID rejects an ID before it is concatenated into a request URL.
+//
+// These IDs come from the last path segment of a tidal:// deep link, which the
+// browser hands to `gotidal play` when a page navigates to that scheme — so
+// they are remote input. Without this, an ID of
+// "1/relationships/items?countryCode=XX&" splices extra path segments and
+// query parameters into a request that carries the user's bearer token.
+// Excluding "/", "?", "&", "#", "%" and "." is what makes the concatenation
+// below safe.
+func checkID(id string) error {
+	if !resourceIDRE.MatchString(id) {
+		return fmt.Errorf("%w: %q", ErrInvalidID, sanitize.Text(id))
+	}
+	return nil
+}
+
+// decodeJSON decodes a JSON response body into v, then strips terminal
+// control characters from every string it contains (see internal/sanitize).
+//
+// Every decode in this package must go through here rather than calling
+// json.NewDecoder directly. These responses carry remote, attacker-influenced
+// text — track, album, playlist and mix names are user-set on Tidal — that is
+// rendered straight into a terminal, which executes escape sequences rather
+// than displaying them. Sanitizing here rather than at the ~15 render sites
+// means fields added later are covered by default.
+func decodeJSON(r io.Reader, v any) error {
+	if err := json.NewDecoder(r).Decode(v); err != nil {
+		return err
+	}
+	sanitize.Strings(v)
+	return nil
+}
 
 // authGet issues a context-aware GET to u through the authenticated client.
 // It centralises request construction so every call carries the request
@@ -55,18 +97,40 @@ func CoverURL(cover, size string) string {
 	return "https://resources.tidal.com/images/" + dashed + "/" + size + ".jpg"
 }
 
-// apiErr returns a formatted error from a non-2xx response. It tries to extract
-// the human-readable "userMessage" field from the Tidal JSON error body; if
-// that is not present it falls back to the raw body text.
-func apiErr(op string, status int, body []byte) error {
+// apiReason extracts the human-readable part of a non-2xx response: Tidal's
+// own "userMessage" when present, otherwise the raw body text. Split out of
+// apiErr so callers that retry across several attempts (GetStreamURL's
+// quality ladder) can compare and group the reasons rather than keeping only
+// the last error.
+//
+// Both branches end up rendered in the TUI's error line, so the remote text
+// gets the same escape-stripping as any other decoded field.
+func apiReason(status int, body []byte) string {
 	var e struct {
 		UserMessage string `json:"userMessage"`
 	}
 	if json.Unmarshal(body, &e) == nil && e.UserMessage != "" {
-		return fmt.Errorf("%s: %s", op, e.UserMessage)
+		return sanitize.Text(e.UserMessage)
 	}
-	return fmt.Errorf("%s (status %d): %s", op, status, strings.TrimSpace(string(body)))
+	if t := strings.TrimSpace(string(body)); t != "" {
+		return fmt.Sprintf("HTTP %d: %s", status, sanitize.Text(t))
+	}
+	return fmt.Sprintf("HTTP %d", status)
 }
+
+// apiErr returns a formatted error from a non-2xx response.
+func apiErr(op string, status int, body []byte) error {
+	return fmt.Errorf("%s: %s", op, apiReason(status, body))
+}
+
+// qualityError is one quality tier's refusal, carrying the tier and the reason
+// separately so GetStreamURL can say the whole ladder was tried.
+type qualityError struct {
+	quality Quality
+	reason  string
+}
+
+func (e qualityError) Error() string { return string(e.quality) + ": " + e.reason }
 
 type Artist struct {
 	ID   int    `json:"id"`
@@ -188,13 +252,16 @@ func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
 	}
 
 	var u UserResponse
-	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+	if err := decodeJSON(resp.Body, &u); err != nil {
 		return nil, err
 	}
 	return &u, nil
 }
 
 func (c *Client) GetTrack(ctx context.Context, trackID string) (*Track, error) {
+	if err := checkID(trackID); err != nil {
+		return nil, err
+	}
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
 	resp, err := c.authGet(ctx, BaseURL+"/tracks/"+trackID+"?"+params.Encode())
@@ -212,7 +279,7 @@ func (c *Client) GetTrack(ctx context.Context, trackID string) (*Track, error) {
 	}
 
 	var t Track
-	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
+	if err := decodeJSON(resp.Body, &t); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -298,18 +365,24 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (S
 		ladder = lowDataQualityLadder
 	}
 
-	var lastErr error
+	var tiers, reasons []string
 
 	for _, q := range ladder {
 		info, err := c.streamURLForQuality(ctx, trackID, q)
 		if err != nil {
 			// Logged rather than surfaced: a higher tier failing and falling
 			// back to a lower one is normal (account entitlement, or no
-			// hi-res master for this track) and lastErr is discarded the
-			// moment any tier succeeds, so this debug line is the only way
+			// hi-res master for this track), and these are all discarded the
+			// moment any tier succeeds — so this debug line is the only way
 			// to see *why* a track played below the top of the ladder.
 			logger.L.Debug("stream tier unavailable, trying next", "trackID", trackID, "quality", q, "err", err)
-			lastErr = err
+			tiers = append(tiers, q.Label())
+			var qe qualityError
+			if errors.As(err, &qe) {
+				reasons = append(reasons, qe.reason)
+			} else {
+				reasons = append(reasons, err.Error())
+			}
 			continue
 		}
 		if q != ladder[0] {
@@ -318,10 +391,32 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (S
 		return info, nil
 	}
 
-	if lastErr != nil {
-		return StreamInfo{}, fmt.Errorf("no stream available for track %d: %w", trackID, lastErr)
+	if len(reasons) == 0 {
+		return StreamInfo{}, fmt.Errorf("no stream available for track %d", trackID)
 	}
-	return StreamInfo{}, fmt.Errorf("no stream available for track %d", trackID)
+
+	// Name every tier that was tried, not just the last rung. The previous
+	// message ended in "get stream (LOW): ..." because LOW is the bottom of
+	// both ladders, which read as though only the lossy tier had been
+	// attempted — and sent the reader to the Data Saver and bit-perfect
+	// settings, neither of which decides whether the asset exists.
+	sameReason := true
+	for _, r := range reasons[1:] {
+		if r != reasons[0] {
+			sameReason = false
+			break
+		}
+	}
+	if sameReason {
+		return StreamInfo{}, fmt.Errorf("track %d is unavailable at every quality (%s): %s",
+			trackID, strings.Join(tiers, ", "), reasons[0])
+	}
+	parts := make([]string, len(tiers))
+	for i := range tiers {
+		parts[i] = tiers[i] + " — " + reasons[i]
+	}
+	return StreamInfo{}, fmt.Errorf("track %d is unavailable at every quality: %s",
+		trackID, strings.Join(parts, "; "))
 }
 
 // streamURLForQuality fetches the stream URL for a single audio-quality tier.
@@ -344,15 +439,15 @@ func (c *Client) streamURLForQuality(ctx context.Context, trackID int, q Quality
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return StreamInfo{}, apiErr("get stream ("+string(q)+")", resp.StatusCode, body)
+		return StreamInfo{}, qualityError{quality: q, reason: apiReason(resp.StatusCode, body)}
 	}
 
 	var s StreamResponse
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+	if err := decodeJSON(resp.Body, &s); err != nil {
 		return StreamInfo{}, err
 	}
 	if len(s.URLs) == 0 {
-		return StreamInfo{}, fmt.Errorf("get stream (%s): response contained no URLs", q)
+		return StreamInfo{}, qualityError{quality: q, reason: "response contained no URLs"}
 	}
 
 	streamURL := s.URLs[0]
@@ -385,7 +480,7 @@ func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
 	}
 
 	var res FavoritesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 
@@ -414,13 +509,16 @@ func (c *Client) GetTrackRadio(ctx context.Context, trackID int) ([]Track, error
 	}
 
 	var res radioResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 	return res.Items, nil
 }
 
 func (c *Client) GetAlbumTracks(ctx context.Context, albumID string) ([]Track, error) {
+	if err := checkID(albumID); err != nil {
+		return nil, err
+	}
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
 
@@ -437,7 +535,7 @@ func (c *Client) GetAlbumTracks(ctx context.Context, albumID string) ([]Track, e
 	}
 
 	var res albumTracksResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 	return res.Items, nil
@@ -474,7 +572,7 @@ func (c *Client) GetArtistAlbums(ctx context.Context, artistID int) ([]Album, er
 		}
 
 		var res artistAlbumsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		if err := decodeJSON(resp.Body, &res); err != nil {
 			_ = resp.Body.Close()
 			return nil, err
 		}
@@ -510,7 +608,7 @@ func (c *Client) GetArtistTopTracks(ctx context.Context, artistID, limit int) ([
 	}
 
 	var res artistTopTracksResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 	for i := range res.Items {
@@ -638,7 +736,7 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 	}
 
 	var res v2jsonAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 
@@ -653,6 +751,9 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 		if err := json.Unmarshal(raw, &obj); err != nil {
 			continue
 		}
+		// res.Included is []json.RawMessage, so decodeJSON's walk could not
+		// reach inside it — these strings are only decoded here.
+		sanitize.Strings(&obj)
 		if obj.Type == "playlists" {
 			playlistAttrs[obj.ID] = obj.Attributes
 		}
@@ -673,6 +774,9 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 }
 
 func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error) {
+	if err := checkID(mixID); err != nil {
+		return nil, err
+	}
 	// Step 1: fetch the ordered list of track IDs from the v2 playlist endpoint.
 	// The v2 API only returns IDs here — artist/album sideloading is not supported
 	// by this endpoint despite the include parameter existing in the spec.
@@ -693,7 +797,7 @@ func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error
 	}
 
 	var res v2jsonAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := decodeJSON(resp.Body, &res); err != nil {
 		return nil, err
 	}
 

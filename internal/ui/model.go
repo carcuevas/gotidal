@@ -20,6 +20,7 @@ import (
 	"github.com/carcuevas/gotidal/internal/logger"
 	"github.com/carcuevas/gotidal/internal/mpris"
 	"github.com/carcuevas/gotidal/internal/player"
+	"github.com/carcuevas/gotidal/internal/sanitize"
 	"github.com/carcuevas/gotidal/internal/spotify"
 	"github.com/carcuevas/gotidal/internal/store"
 	"github.com/carcuevas/gotidal/internal/tidal"
@@ -248,6 +249,20 @@ type Model struct {
 	// Favorited track IDs (populated from GetFavorites; toggled by "f")
 	favorites map[int]bool
 
+	// playingIndex is the index in m.tracks of the track actually playing,
+	// or -1 when nothing is.
+	//
+	// This exists because m.cursor cannot serve that role: it is a shared
+	// browse cursor that switching tabs, opening the device picker and
+	// plain queue navigation all rewrite (selectSection resets it to 0 on
+	// every tab change). Advancing the queue from m.cursor therefore
+	// mis-fired after any of those — visiting Search and coming back left
+	// the cursor at 0, so the "next" track resolved to the one already
+	// playing and it played a second time while the UI moved on. It is also
+	// what the Queue cursor is restored to when that tab is re-entered, so
+	// the artwork and lyrics follow the playing track rather than row 0.
+	playingIndex int
+
 	// Shuffle
 	shuffleMode   ShuffleMode
 	tracksOrder   []tidal.Track // original order, saved when shuffle is enabled
@@ -456,6 +471,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		searchInput:         ti,
 		section:             SecQueue,
 		focusMain:           true,
+		playingIndex:        -1,
 		volume:              vol,
 		currentDevice:       currentDevice,
 		bitPerfectMode:      bitPerfectMode,
@@ -518,6 +534,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		searchInput:    ti,
 		section:        SecQueue,
 		focusMain:      true,
+		playingIndex:   -1,
 		volume:         vol,
 		currentDevice:  currentDevice,
 		bitPerfectMode: bitPerfectMode,
@@ -554,11 +571,58 @@ func (m *Model) applyShuffle() {
 		copy(m.tracks, m.tracksOrder)
 	}
 	m.shufflePlayed = nil
+	// m.tracks was just rebuilt, so the recorded position is stale.
+	m.syncPlayingIndex()
+}
+
+// resetSectionCursor puts the shared browse cursor where it belongs after a
+// tab switch (or anything else that used to blindly zero it).
+//
+// For the Queue that is the playing track, not row 0: the Queue cover and
+// lyrics panes follow the cursor (see hoveredTrack), so zeroing it made
+// leaving the tab and coming back show the first queued track's artwork and
+// lyrics while a different track was playing.
+func (m *Model) resetSectionCursor() {
+	if m.section == SecQueue && m.playingIndex >= 0 && m.playingIndex < len(m.tracks) {
+		m.cursor = m.playingIndex
+		return
+	}
+	m.cursor = 0
+}
+
+// advanceBase is the index that next/previous count from: the track actually
+// playing, or — when nothing is playing — wherever the cursor sits, so
+// pressing next on a freshly restored session still starts from the selection.
+//
+// It must not be m.cursor while a track is playing; see playingIndex for why.
+func (m *Model) advanceBase() int {
+	if m.playingIndex >= 0 && m.playingIndex < len(m.tracks) {
+		return m.playingIndex
+	}
+	return m.cursor
+}
+
+// syncPlayingIndex re-locates the playing track in m.tracks by ID, for use
+// wherever the queue is reordered or replaced wholesale. Sets -1 when nothing
+// is playing or the track is no longer queued. With a duplicated track ID the
+// first occurrence wins, which is also how the rest of the queue code
+// (removeFromQueue, moveQueueItem) resolves duplicates.
+func (m *Model) syncPlayingIndex() {
+	m.playingIndex = -1
+	if m.currentTrack == nil {
+		return
+	}
+	for i := range m.tracks {
+		if m.tracks[i].ID == m.currentTrack.ID {
+			m.playingIndex = i
+			return
+		}
+	}
 }
 
 // prevIndex returns the index of the previously played track. In shuffle
-// modes it pops from the play history stack; otherwise it returns cursor-1.
-// Returns -1 if there is no previous track.
+// modes it pops from the play history stack; otherwise it steps back from the
+// playing track. Returns -1 if there is no previous track.
 func (m *Model) prevIndex() int {
 	if len(m.tracks) == 0 {
 		return -1
@@ -570,15 +634,15 @@ func (m *Model) prevIndex() int {
 			return prev
 		}
 	}
-	prev := m.cursor - 1
+	prev := m.advanceBase() - 1
 	if prev >= 0 {
 		return prev
 	}
 	return -1
 }
 
-// nextIndex returns the index of the next track to play given the current
-// cursor and shuffle mode. Returns -1 if there is no next track.
+// nextIndex returns the index of the next track to play given the playing
+// track and shuffle mode. Returns -1 if there is no next track.
 func (m *Model) nextIndex() int {
 	if len(m.tracks) == 0 {
 		return -1
@@ -604,7 +668,7 @@ func (m *Model) nextIndex() int {
 	default:
 		// ShuffleOff and ShuffleFisherYates both advance linearly through
 		// the (possibly pre-shuffled) slice.
-		next := m.cursor + 1
+		next := m.advanceBase() + 1
 		if next < len(m.tracks) {
 			return next
 		}
@@ -716,6 +780,23 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		}
 	}
 	m.currentTrack = &track
+	// Record where this track sits in the queue, so advancing never has to
+	// consult the shared browse cursor (see playingIndex). Callers that know
+	// the index have already pointed the cursor at it, which resolves
+	// duplicate IDs exactly; anything else — playing straight out of search
+	// results, say — falls back to an ID lookup, and to -1 when the track is
+	// not queued at all.
+	m.playingIndex = -1
+	if m.cursor >= 0 && m.cursor < len(m.tracks) && m.tracks[m.cursor].ID == track.ID {
+		m.playingIndex = m.cursor
+	} else {
+		for i := range m.tracks {
+			if m.tracks[i].ID == track.ID {
+				m.playingIndex = i
+				break
+			}
+		}
+	}
 	m.isPlaying = true
 	m.stopped = false
 	m.skipGen++
@@ -1274,7 +1355,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ps.CurrentTrackJSON != "" {
 			var t tidal.Track
 			if err := json.Unmarshal([]byte(ps.CurrentTrackJSON), &t); err == nil {
+				// Crosses a D-Bus boundary rather than internal/tidal, so it
+				// misses that package's sanitizing decoder.
+				sanitize.Strings(&t)
 				m.currentTrack = &t
+				m.syncPlayingIndex()
 				coverCmd = m.maybeUpdateCover(m.coverTrack())
 			}
 		} else {
@@ -1285,11 +1370,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.localPlaylist && ps.PlaylistJSON != "" && ps.PlaylistJSON != "null" {
 			var tracks []tidal.Track
 			if err := json.Unmarshal([]byte(ps.PlaylistJSON), &tracks); err == nil && len(tracks) > 0 {
+				sanitize.Strings(&tracks)
 				// Only replace the list when it actually changed to avoid
 				// clobbering the cursor position on every tick.
 				if len(tracks) != len(m.tracks) || (len(tracks) > 0 && tracks[0].ID != m.tracks[0].ID) {
 					m.tracksOrder = tracks
-					m.applyShuffle()
+					m.applyShuffle() // re-syncs playingIndex against the new list
 					// Don't yank the user out of a view they're actively browsing
 					// (search results, artist view, device select). The updated
 					// playlist is still applied underneath, so it's there when they
@@ -1331,7 +1417,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.errText = msg.err.Error()
 		m.advancing = false
-		m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+		m.shufflePlayed = append(m.shufflePlayed, m.advanceBase())
 		next := m.nextIndex()
 		if next >= 0 {
 			m.advancing = true
@@ -1400,7 +1486,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break // stale — from a track that was already skipped past
 		}
 		if !m.advancing {
-			m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+			m.shufflePlayed = append(m.shufflePlayed, m.advanceBase())
 			next := m.nextIndex()
 			if next >= 0 {
 				m.advancing = true
@@ -1654,7 +1740,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Read back the real state — see togglePlay in keys.go.
 			m.isPlaying = !m.player.IsPaused()
 		case mpris.CmdNext:
-			m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+			m.shufflePlayed = append(m.shufflePlayed, m.advanceBase())
 			next := m.nextIndex()
 			if next >= 0 {
 				m.advancing = true
@@ -1709,6 +1795,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err := json.Unmarshal([]byte(playlistJSON), &tracks); err != nil || len(tracks) == 0 {
 						return errMsg(fmt.Errorf("invalid playlist from client: %w", err))
 					}
+					sanitize.Strings(&tracks)
 					return playPlaylistMsg{tracks: tracks, startIndex: startIdx}
 				},
 				listenMPRIS(m.mprisCh),

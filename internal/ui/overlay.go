@@ -314,7 +314,10 @@ func (m Model) updateDeviceSelect(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "esc":
 		m.overlay = OverlayNone
-		m.cursor = 0
+		// This overlay borrows the shared cursor for the device list, so
+		// closing it has to hand the cursor back rather than zero it — on the
+		// Queue that means the playing track (see resetSectionCursor).
+		m.resetSectionCursor()
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -331,7 +334,7 @@ func (m Model) updateDeviceSelect(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		chosen := m.devices[m.cursor]
 		m.currentDevice = chosen.HWName
 		m.overlay = OverlayNone
-		m.cursor = 0
+		m.resetSectionCursor()
 		if !m.bitPerfectMode {
 			// A PipeWire sink switch is a local system-audio change, not a
 			// player command — it applies immediately regardless of client

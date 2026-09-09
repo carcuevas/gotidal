@@ -45,6 +45,7 @@ func (m *Model) playListIntoQueue(list []tidal.Track, i int) tea.Cmd {
 	m.cursor = i
 	_ = m.store.SavePlaylist(m.tracks)
 	track := m.tracks[i]
+	// doPlayTrack reads the cursor to record playingIndex; it is correct here.
 	_ = m.store.CacheTrack(track.ID, track)
 	return m.playTrackCmd(track)
 }
@@ -62,6 +63,7 @@ func (m *Model) stopCurrentTrack() {
 		_ = m.player.Pause()
 	}
 	m.currentTrack = nil
+	m.playingIndex = -1
 	m.isPlaying = false
 	m.stopped = false
 	m.currPos = 0
@@ -110,6 +112,7 @@ func (m *Model) clearQueue() {
 	m.tracksOrder = nil
 	m.shufflePlayed = nil
 	m.cursor = 0
+	m.playingIndex = -1
 	m.queueSource = ""
 	m.queuePlaylistUUID = ""
 	m.queueDirty = false
@@ -147,6 +150,13 @@ func (m *Model) removeFromQueue(i int) {
 	if m.cursor >= len(m.tracks) {
 		m.cursor = max(len(m.tracks)-1, 0)
 	}
+	// Everything after i shifted down one, so the recorded playing position
+	// has to move with it or the next track would be picked from the old
+	// numbering. Removing the playing track itself is handled by
+	// stopCurrentTrack below, which clears the index outright.
+	if m.playingIndex > i {
+		m.playingIndex--
+	}
 	removedWasPlaying := m.currentTrack != nil && m.currentTrack.ID == removed.ID
 	m.queueDirty = true
 	_ = m.store.SavePlaylist(m.tracks)
@@ -180,6 +190,13 @@ func (m *Model) moveQueueItem(i, delta int) {
 	}
 
 	m.cursor = j
+	// The two rows swapped, so follow the playing track into its new slot.
+	switch m.playingIndex {
+	case i:
+		m.playingIndex = j
+	case j:
+		m.playingIndex = i
+	}
 	m.queueDirty = true
 	_ = m.store.SavePlaylist(m.tracks)
 }
@@ -198,6 +215,7 @@ func (m *Model) reshuffleQueue() {
 			break
 		}
 	}
+	m.syncPlayingIndex()
 	m.queueDirty = true
 	_ = m.store.SavePlaylist(m.tracks)
 }
