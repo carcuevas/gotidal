@@ -9,6 +9,14 @@ import (
 	"github.com/carcuevas/gotidal/internal/tidal"
 )
 
+// Sample-rate thresholds for the hi-res badge colours. Each is the bottom of
+// its family, so the 44.1 kHz-derived rate colours the same as its 48 kHz
+// twin (176.4 with 192, 88.2 with 96).
+const (
+	rateHiRes96  = 88200
+	rateHiRes192 = 176400
+)
+
 // gradColors returns the four-stop CAVA gradient as a cycling slice, falling
 // back gracefully if any stop is not a plain color.
 func gradColors(t Theme) []lipgloss.TerminalColor {
@@ -126,27 +134,8 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	head := title + strings.Repeat(" ", pad) + status
 
 	badge := ""
-	if q := m.currentQuality.Label(); q != "" {
-		style := t.RowFaint
-		switch {
-		case m.currentQuality == tidal.QualityHigh || m.currentQuality == tidal.QualityLow:
-			// HIGH/LOW are lossy AAC tiers — nothing was "converted" away
-			// from bit-perfect, they were never bit-perfect to begin with
-			// (granted directly by Tidal, e.g. under Data Saver). Styled like
-			// an error/warning (t.Err — themed red/rose) rather than the
-			// faint style every other badge state uses, so a lossy stream is
-			// something you'd actually notice at a glance, not read past.
-			q += " (lossy)"
-			style = t.Err
-		case !m.bitPerfect:
-			// A LOSSLESS/HI_RES_LOSSLESS tier that isn't reaching the DAC
-			// untouched — either the plughw: fallback engaged, or PipeWire
-			// mode is in effect (PipeWire's own graph may still resample or
-			// mix downstream). Mark the badge rather than letting it assert
-			// untouched output.
-			q += " (converted)"
-		}
-		badge = style.Render(q)
+	if text, style, ok := qualityBadge(t, m.currentQuality, m.currentRate, m.bitPerfect, m.dacModeActive); ok {
+		badge = style.Render(text)
 	}
 	artistRoom := max(inner-lipgloss.Width(badge)-1, 1)
 	artist := t.RowDim.Render(truncateStr(m.currentTrack.Artist.Name, artistRoom))
@@ -162,6 +151,62 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 
 	body := strings.Join([]string{head, artistRow, bar + timeStr}, "\n")
 	return renderPanel(t, "", false, w, 5, body)
+}
+
+// qualityBadge decides the now-playing quality badge's text and style. Split
+// out of renderNowPlayingBar so the choice can be asserted directly: lipgloss
+// drops colour when there is no TTY, so a test that only inspects the rendered
+// string cannot tell two colours apart.
+//
+// ok is false when there is no tier to report.
+func qualityBadge(t Theme, q tidal.Quality, rate uint32, bitPerfect, dacMode bool) (text string, style lipgloss.Style, ok bool) {
+	text = q.Label()
+	if text == "" {
+		return "", lipgloss.Style{}, false
+	}
+
+	switch {
+	case q == tidal.QualityHigh || q == tidal.QualityLow:
+		// HIGH/LOW are lossy AAC tiers — nothing was "converted" away from
+		// bit-perfect, they were never bit-perfect to begin with (granted
+		// directly by Tidal, e.g. under Data Saver). Styled like an
+		// error/warning (t.Err — themed red/rose) rather than the faint style
+		// every other badge state uses, so a lossy stream is something you'd
+		// actually notice at a glance, not read past. A high sample rate does
+		// not redeem it, so this case comes first.
+		return text + " (lossy)", t.Err, true
+
+	case q == tidal.QualityHiRes && rate >= rateHiRes192:
+		// 176.4/192 kHz reaching the device — the top of what Tidal serves.
+		return text, t.QualityHiRes192, true
+
+	case q == tidal.QualityHiRes && rate >= rateHiRes96:
+		// 88.2/96 kHz: still hi-res, but not the 192 kHz family, so it gets
+		// its own colour rather than being indistinguishable from it.
+		return text, t.QualityHiRes96, true
+
+	case !dacMode:
+		// PipeWire is the output path by the user's own choice here, not a
+		// fallback anything was forced into — SetDACMode(false) is exactly
+		// how PipeWire mode is turned on. bitPerfect is always false in this
+		// mode (PipeWire's own graph may still resample or mix downstream, a
+		// possibility we have no way to confirm or rule out from here), so
+		// tagging every single PipeWire-routed track "(converted)" claimed a
+		// downgrade regardless of whether the stream's own resolution ever
+		// actually changed — this tier and rate are exactly what was
+		// requested and granted; only the guarantee of an untouched path to
+		// the DAC is what PipeWire mode gives up.
+		return text, t.RowFaint, true
+
+	case !bitPerfect:
+		// dacMode was on, so this is the real compromise: our own hw:
+		// format negotiation had to fall back to plughw:, which resamples or
+		// reformats to something the device will accept. Unlike the PipeWire
+		// case above, this one is a verified format change, so the badge
+		// says so.
+		return text + " (converted)", t.RowFaint, true
+	}
+	return text, t.RowFaint, true
 }
 
 // nowBarStatus renders the compact volume / device / shuffle readout shown at

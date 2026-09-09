@@ -10,15 +10,15 @@ import (
 // handoff window on it.
 func TestAwaitNextURLTakesAQueuedURL(t *testing.T) {
 	p := NewPlayer()
-	p.nextURLCh <- "https://example.com/a.flac"
+	p.nextURLCh <- Single("https://example.com/a.flac")
 
 	start := time.Now()
 	got, ok := p.awaitNextURL(context.Background())
 	if !ok {
 		t.Fatal("awaitNextURL gave up on a URL that was already queued")
 	}
-	if got != "https://example.com/a.flac" {
-		t.Errorf("got %q", got)
+	if got.URL() != "https://example.com/a.flac" {
+		t.Errorf("got %v", got.URLs)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("took %v — it waited instead of taking the queued URL", elapsed)
@@ -36,7 +36,7 @@ func TestAwaitNextURLRescuesAURLThatLandsAsTheWindowCloses(t *testing.T) {
 	// Put the URL in the buffer without ever letting the first select case
 	// observe it: the timer has already expired by the time we call, so the
 	// only way to find it is the post-timeout re-read.
-	p.nextURLCh <- "https://example.com/late.flac"
+	p.nextURLCh <- Single("https://example.com/late.flac")
 
 	// takeQueuedURL is the post-timeout re-read itself, called directly so the
 	// test neither waits out nextURLTimeout nor has to win a scheduler race to
@@ -45,8 +45,8 @@ func TestAwaitNextURLRescuesAURLThatLandsAsTheWindowCloses(t *testing.T) {
 	if !ok {
 		t.Fatal("a URL sent as the handoff window closed was stranded in the channel")
 	}
-	if got != "https://example.com/late.flac" {
-		t.Errorf("got %q", got)
+	if got.URL() != "https://example.com/late.flac" {
+		t.Errorf("got %v", got.URLs)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestTakeQueuedURLOnEmptyChannel(t *testing.T) {
 	go func() {
 		defer close(done)
 		if u, ok := p.takeQueuedURL(); ok {
-			t.Errorf("takeQueuedURL invented %q from an empty channel", u)
+			t.Errorf("takeQueuedURL invented %v from an empty channel", u.URLs)
 		}
 	}()
 	select {
@@ -89,7 +89,7 @@ func TestPlayNextWithNoLoopDoesNotReturnADeadDoneChannel(t *testing.T) {
 	}
 	// Play will fail here (no ALSA device in CI), but the contract under test
 	// is that PlayNext delegates rather than queueing into a dead channel.
-	done, err := p.PlayNext("https://example.com/a.flac")
+	done, err := p.PlayNext(Single("https://example.com/a.flac"))
 	if err == nil && done == nil {
 		t.Error("PlayNext returned neither an error nor a done channel")
 	}

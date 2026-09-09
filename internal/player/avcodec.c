@@ -127,11 +127,33 @@ fail:
     return rc;
 }
 
+// avio_error returns the sticky AVIO error, or 0 when the input is healthy.
+// libavformat records a failed read here; a clean end of stream sets
+// eof_reached instead and leaves this at 0.
+static int avio_error(av_decoder_t *d) {
+    if (d->fmt_ctx && d->fmt_ctx->pb && d->fmt_ctx->pb->error < 0) {
+        return d->fmt_ctx->pb->error;
+    }
+    return 0;
+}
+
 int av_read_samples(av_decoder_t *d, int32_t **out_buf, int *out_count) {
     for (;;) {
         int rc = avcodec_receive_frame(d->codec_ctx, d->frame);
         if (rc == 0) goto resample;
-        if (rc != AVERROR(EAGAIN)) return rc;
+        if (rc != AVERROR(EAGAIN)) {
+            // A failed read arrives here as EOF: av_read_frame below reports
+            // the error, this function flushes the decoder, and the drain
+            // finishes with AVERROR_EOF. Reporting that as a clean end of
+            // stream would let the caller treat a dropped connection as a
+            // finished track and advance the queue, silently losing the rest
+            // of the song — so prefer the sticky I/O error when there is one.
+            if (rc == AVERROR_EOF) {
+                int ioerr = avio_error(d);
+                if (ioerr < 0) return ioerr;
+            }
+            return rc;
+        }
 
         // Feed the decoder.
         for (;;) {

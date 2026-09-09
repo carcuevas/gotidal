@@ -117,16 +117,20 @@ func (m Model) updateSearchKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	row, ok := m.selectedSearchRow()
-	// Track-level shortcuts (o/f/r/a/space/…) when a track row is selected.
-	if ok && row.kind == rowTrack {
-		return m.commonKeys(k)
-	}
 	// "a" on a playlist row adds the whole playlist to the queue — see
-	// enqueuePlaylistCmd. Distinct from the track-level "a" above since a
-	// playlist row has no single track for commonKeys' selectedTrack to find.
+	// enqueuePlaylistCmd. Checked before the generic fallthrough below since
+	// a playlist row has no single track for commonKeys' selectedTrack to
+	// find — commonKeys itself has no equivalent handling for "a" here.
 	if ok && row.kind == rowPlaylist && k.String() == "a" {
 		cmd := m.enqueuePlaylistCmd(m.searchResults.Playlists[row.idx])
 		return m, cmd
+	}
+	if ok {
+		// Track-level shortcuts (o/f/r/a/space/…) when a track row is
+		// selected; "i" (favorite) when an artist or album row is selected —
+		// see selectedArtist/selectedAlbum. Playback-control keys (p/s/f/b/
+		// >/<) work here regardless of row kind, same as any other tab.
+		return m.commonKeys(k)
 	}
 	return m, nil
 }

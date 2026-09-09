@@ -64,13 +64,23 @@ int configure_hw_pcm(unsigned int channels, unsigned int rate, int bits,
     if (rc < 0) goto fail;
     result->rate = rate;
 
-    // Set period size first so the DAC gets a sane interrupt rate (~23ms at
-    // 44100 Hz), then set the buffer to 4× the negotiated period.  Setting
-    // buffer first and then querying period_size_min can return absurdly small
-    // values on some USB DACs (e.g. 87 frames on the Hidizs S9 Pro Plus
-    // "Martha"), which causes ~1000 interrupts/s and severe distortion.
+    // Set period size first so the DAC gets a sane interrupt rate (~23ms),
+    // then set the buffer to 4× the negotiated period.  Setting buffer first
+    // and then querying period_size_min can return absurdly small values on
+    // some USB DACs (e.g. 87 frames on the Hidizs S9 Pro Plus "Martha"),
+    // which causes ~1000 interrupts/s and severe distortion.
+    //
+    // The period scales with the rate rather than being a fixed frame count.
+    // 1024 frames is ~23ms at 44.1kHz but only 5.3ms at 192kHz, leaving a
+    // 4-period buffer holding just 21ms — tight enough that any hiccup in the
+    // decode path underruns the device. Doubling rounds up to a power of two,
+    // so a higher rate always gets at least as much buffered time as 44.1kHz
+    // and never less (192kHz lands on ~43ms periods, ~171ms of buffer).
     {
         snd_pcm_uframes_t period_size = 1024;
+        while (period_size * 44100 < (snd_pcm_uframes_t)rate * 1024) {
+            period_size *= 2;
+        }
         rc = snd_pcm_hw_params_set_period_size_near(*handle_out, params, &period_size, NULL);
         if (rc < 0) goto fail;
 

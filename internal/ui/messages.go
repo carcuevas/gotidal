@@ -54,10 +54,30 @@ type (
 	errMsg      error
 	clearErrMsg struct{}
 	// queueSavedMsg confirms the queue was saved as / appended to a playlist.
+	// created distinguishes the two: the Playlists tab has to learn about a
+	// brand-new playlist, but only bump the track count of an existing one.
 	queueSavedMsg struct {
-		uuid  string
-		name  string
-		count int
+		uuid    string
+		name    string
+		count   int
+		created bool
+	}
+	// playlistTracksAddedMsg confirms a specific set of tracks (not
+	// necessarily the live queue — a single track from the action sheet, most
+	// often) was added to a new or existing playlist. Deliberately does not
+	// carry a uuid or retag queue-source state the way queueSavedMsg does:
+	// see addTracksToExistingPlaylistCmd.
+	playlistTracksAddedMsg struct {
+		uuid    string
+		name    string
+		count   int
+		created bool
+	}
+	// playlistDeletedMsg confirms a playlist was deleted on Tidal's side, so
+	// the local list can drop it.
+	playlistDeletedMsg struct {
+		uuid string
+		name string
 	}
 	clearToastMsg struct{}
 	// spotifyResolvedMsg carries the result of resolving + Tidal-matching a
@@ -123,6 +143,28 @@ type (
 	favoriteMsg struct {
 		trackID int
 		added   bool
+	}
+	// favoriteAlbumAddedMsg confirms an album was added to favorites (the
+	// artist drill-down's "i" action — adding, not toggling: there is no
+	// per-row favorited indicator there to toggle off from).
+	favoriteAlbumAddedMsg struct {
+		title string
+	}
+	// favoriteAlbumRemovedMsg confirms an album was removed from favorites via
+	// "i" on the Favorite Albums tab itself, where every row is already a
+	// favorite by definition — it drops albumID out of m.favAlbums directly.
+	favoriteAlbumRemovedMsg struct {
+		albumID int
+		title   string
+	}
+	// favoriteArtistAddedMsg/favoriteArtistRemovedMsg mirror the album ones
+	// above, for "i" on an artist (a Search row, or the Favorite Artists tab).
+	favoriteArtistAddedMsg struct {
+		name string
+	}
+	favoriteArtistRemovedMsg struct {
+		artistID int
+		name     string
 	}
 	// parentStateMsg carries the live state polled from the parent instance.
 	parentStateMsg mpris.PlayerState

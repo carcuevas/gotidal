@@ -102,8 +102,8 @@ type Player struct {
 	mu             sync.Mutex
 	cancel         context.CancelFunc
 	doneCh         chan struct{}
-	deviceOverride string // set via SetDevice; empty = auto-detect
-	currentURL     string // stored so Seek can signal the playback loop
+	deviceOverride string       // set via SetDevice; empty = auto-detect
+	currentURL     StreamSource // stored so Seek can signal the playback loop
 
 	// dacMode selects the output path. true (the default) opens the ALSA
 	// hw: device directly for bit-perfect output, reserved exclusively via
@@ -119,10 +119,11 @@ type Player struct {
 	// Buffered 1 so Seek never blocks; the loop drains it before checking again.
 	seekCh chan uint64
 
-	// nextURLCh carries the next track's stream URL into the running
+	// nextURLCh carries the next track's stream URLs into the running
 	// playbackLoop so it can transition without closing the ALSA device.
-	// Buffered 1 so PlayNext never blocks.
-	nextURLCh chan string
+	// Buffered 1 so PlayNext never blocks. A hi-res track is a whole DASH
+	// segment list rather than a single URL, which is why this is a slice.
+	nextURLCh chan StreamSource
 	// transitionDoneCh is set by PlayNext() before sending on nextURLCh.
 	// The playbackLoop installs it as the new doneCh once the new stream starts.
 	transitionDoneCh chan struct{}
@@ -157,6 +158,16 @@ type Player struct {
 	// reports whether that path preserves samples untouched.
 	activeDevice string
 	bitPerfect   bool
+	// activeDACMode is the dacMode value actually used to open activeDevice —
+	// distinct from the live p.dacMode field, which is the user's current
+	// toggle and may have changed since (SetDACMode takes effect starting
+	// with the next track, not the one already playing). Exposed so the UI
+	// can tell "not bit-perfect because PipeWire was chosen on purpose" apart
+	// from "not bit-perfect because the hw: negotiation itself had to fall
+	// back to plughw:" — only the latter is an actual compromise; the former
+	// is inherent to sharing PipeWire's graph and true regardless of whether
+	// PipeWire happens to be resampling this particular track.
+	activeDACMode bool
 
 	// plugFallback memoises devices whose hw: endpoint refused the requested
 	// format, so pause/resume and gapless transitions skip the known-failing
@@ -288,6 +299,7 @@ func (p *Player) openDevice(ctx context.Context, requested string, channels uint
 	p.mu.Unlock()
 	p.muInfo.Lock()
 	p.activeDevice = ah.device
+	p.activeDACMode = dacMode
 	// In PipeWire mode the negotiated format never reflects genuine
 	// bit-perfectness — PipeWire's own graph may still resample or mix
 	// downstream — regardless of whether our own hw:->plughw: fallback
@@ -298,21 +310,25 @@ func (p *Player) openDevice(ctx context.Context, requested string, channels uint
 	return ah, nil
 }
 
-// AudioPath reports the ALSA device actually in use and whether that path is
-// bit-perfect. Returns ("", true) before any device has been opened.
-func (p *Player) AudioPath() (device string, bitPerfect bool) {
+// AudioPath reports the ALSA device actually in use, whether that path is
+// bit-perfect, and whether it was opened in DAC (hw:) mode at all — the third
+// value is what lets the UI distinguish a real format compromise (the
+// hw:->plughw: fallback engaged) from PipeWire being the user's deliberate
+// choice, both of which otherwise collapse to the same bitPerfect=false.
+// Returns ("", true, true) before any device has been opened.
+func (p *Player) AudioPath() (device string, bitPerfect, dacMode bool) {
 	p.muInfo.RLock()
 	defer p.muInfo.RUnlock()
 	if p.activeDevice == "" {
-		return "", true
+		return "", true, true
 	}
-	return p.activeDevice, p.bitPerfect
+	return p.activeDevice, p.bitPerfect, p.activeDACMode
 }
 
 func NewPlayer() *Player {
 	p := &Player{
 		seekCh:    make(chan uint64, 1),
-		nextURLCh: make(chan string, 1),
+		nextURLCh: make(chan StreamSource, 1),
 		pausedCh:  make(chan error, 1),
 		skipCh:    make(chan struct{}),
 		pcmTapCh:  make(chan []byte, 4),
@@ -649,7 +665,7 @@ func openALSARaw(ctx context.Context, device string, channels uint8, rate uint32
 // track. The channel is closed when playback finishes naturally. Callers should
 // use the returned channel directly rather than calling Done() separately to
 // avoid a race between stop() clearing doneCh and the new one being set.
-func (p *Player) Play(url string) (<-chan struct{}, error) {
+func (p *Player) Play(src StreamSource) (<-chan struct{}, error) {
 	// If the previous loop does not shut down within stop()'s window, refuse
 	// to start a second one: two loops would fight over the ALSA device and
 	// the D-Bus reservation, with the survivor playing the wrong track.
@@ -688,7 +704,7 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	p.cancel = cancel
 	p.doneCh = doneCh
 	p.loopDone = loopDone
-	p.currentURL = url
+	p.currentURL = src
 	p.skipCh = make(chan struct{})
 	p.mu.Unlock()
 
@@ -712,7 +728,7 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	// releasing again on final exit via defer).
 	go func() {
 		defer close(loopDone)
-		natural := p.playbackLoop(ctx, url, device, releaseReservation)
+		natural := p.playbackLoop(ctx, src, device, releaseReservation)
 		// Only close doneCh when the loop ended naturally (track finished or
 		// transitioned). An aborted loop (openALSA failed, stream error, etc.)
 		// must not close doneCh, otherwise the UI treats it as a completed
@@ -775,18 +791,18 @@ func (p *Player) stop() bool {
 // without closing the ALSA device. If the new track has a different format
 // (sample rate, channels, bits), the loop will close and reopen the device
 // internally. If no playback loop is running, it falls back to Play().
-func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
+func (p *Player) PlayNext(src StreamSource) (<-chan struct{}, error) {
 	p.mu.Lock()
 	loopDone := p.loopDone
 	p.mu.Unlock()
 
 	if loopDone == nil {
-		return p.Play(url)
+		return p.Play(src)
 	}
 	// Check if the loop is actually still alive.
 	select {
 	case <-loopDone:
-		return p.Play(url)
+		return p.Play(src)
 	default:
 	}
 
@@ -805,7 +821,7 @@ func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
 	case <-p.nextURLCh:
 	default:
 	}
-	p.nextURLCh <- url
+	p.nextURLCh <- src
 
 	atomic.StoreUint32(&p.paused, 0)
 
@@ -822,7 +838,7 @@ func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
 		p.mu.Lock()
 		p.transitionDoneCh = nil
 		p.mu.Unlock()
-		return p.Play(url)
+		return p.Play(src)
 	default:
 	}
 
@@ -876,7 +892,7 @@ func writeSilence(ah *alsaHandle, ms uint32, channels uint8, bytesPerSample int)
 // gapless transitions). Returns true if playback ended naturally (track
 // finished or transitioned), false if it aborted due to an error before any
 // audio was produced (e.g. openALSA failed, stream could not be opened).
-func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseReservation func()) bool {
+func (p *Player) playbackLoop(ctx context.Context, src StreamSource, device string, releaseReservation func()) bool {
 	logger.L.Debug("playbackLoop start")
 
 	p.mu.Lock()
@@ -897,32 +913,24 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		}
 	}
 
-	resp, stream, err := openStream(ctx, url)
+	stream, err := openStream(ctx, src)
 	if err != nil {
 		logger.L.Error("failed to open stream", "err", err)
 		releaseReservation()
 		return false
 	}
-	// resp is reassigned on every seek / next-track reopen below; the inner
-	// transitions close the body they are replacing. This defer is a backstop
-	// that closes whichever response is current when the function returns, so
-	// no path leaks the body. Closing an already-closed http body is a no-op.
-	//
-	// The nil check is load-bearing: openStream returns (nil, nil, err) on
-	// failure, so a reopen that fails mid-playback — a dropped connection on
-	// a seek or a track transition — leaves resp nil, and an unguarded
-	// resp.Body here would panic the whole player instead of stopping it.
+	// stream is reassigned on every seek / next-track reopen below, and each
+	// transition closes the one it replaces. This defer is the backstop that
+	// closes whichever stream is current when the function returns, so no
+	// path leaks the decoder or the HTTP body. The nil check is load-bearing:
+	// a reopen that fails mid-playback — a dropped connection on a seek or a
+	// track transition — leaves stream nil, and dereferencing it here would
+	// panic the whole player instead of stopping playback.
 	defer func() {
-		if resp != nil {
-			_ = resp.Body.Close()
+		if stream != nil {
+			stream.Close()
 		}
 	}()
-
-	logger.L.Debug("HTTP response",
-		"status", resp.StatusCode,
-		"content-type", resp.Header.Get("Content-Type"),
-		"content-length", resp.Header.Get("Content-Length"),
-	)
 
 	info := stream.Info
 	sampleRate := info.SampleRate
@@ -1005,7 +1013,13 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		nFrames int
 	}
 
-	streamLoop := func(skipSamples uint64) (seekTarget uint64, doSeek, aborted bool) {
+	// streamLoop plays the currently open stream. skipSamples is decoded and
+	// discarded before playback starts; baseSamples is the absolute position
+	// that stream's first sample sits at, which is non-zero after a
+	// segment-aligned seek reopened partway through the track. Reporting
+	// position as base+decoded keeps GetPosition (and the progress bar) a
+	// whole-track figure rather than an offset into the reopened fragment.
+	streamLoop := func(skipSamples, baseSamples uint64) (seekTarget uint64, doSeek, aborted bool) {
 		// Capture the current skipCh so we can detect when PlayNext()
 		// interrupts this stream.
 		p.mu.Lock()
@@ -1014,6 +1028,17 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 
 		stopDecode := make(chan struct{})
 		pcmCh := make(chan pcmBuf, 2)
+		// interruptedSeek carries a seek target the decode goroutine noticed
+		// arriving on p.seekCh during the discard loop below, before it ever
+		// produced a real pcm buffer. Without this, a seek that lands while an
+		// earlier one is still discarding samples toward *its* target sits
+		// unread until that discard finishes — repeated f/b presses each
+		// silently completed the previous seek before starting on the next,
+		// which is why several presses in quick succession felt like one long
+		// stall instead of landing where each one asked. The consumer loop
+		// below checks this once pcmCh closes with nothing ever having flowed
+		// through it.
+		interruptedSeek := make(chan uint64, 1)
 
 		go func() {
 			defer close(pcmCh)
@@ -1024,6 +1049,12 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					return
 				case <-stopDecode:
 					return
+				case target := <-p.seekCh:
+					select {
+					case interruptedSeek <- target:
+					default:
+					}
+					return
 				default:
 				}
 				samples, ferr := stream.ReadSamples()
@@ -1033,7 +1064,17 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				n := len(samples) / int(channels)
 				skipped += uint64(n)
 			}
-			atomic.StoreUint64(&p.samplesPlayed, skipped)
+			atomic.StoreUint64(&p.samplesPlayed, baseSamples+skipped)
+
+			// Give the read-ahead buffer a moment to build a cushion before
+			// real playback resumes (see segmentReader.prime): the format
+			// probe that already ran when this stream was opened reads real
+			// data out of the same buffer, which can leave it thin right as
+			// we're about to start writing to ALSA. A no-op almost all of the
+			// time — it only actually waits when the buffer genuinely hasn't
+			// caught up, which is exactly the case that would otherwise
+			// underrun a moment later.
+			stream.primeBuffer()
 
 			for {
 				select {
@@ -1079,7 +1120,25 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			return target, true, false
 		}
 
-		for pcm := range pcmCh {
+		for {
+			pcm, ok := <-pcmCh
+			if !ok {
+				// The decode goroutine exited without producing anything more.
+				// Ordinarily that means the stream ended naturally or playback
+				// was cancelled — but if it recorded an interrupted seek, a
+				// fresher target arrived mid-discard (see above) and this
+				// streamLoop call never got as far as writing anything to
+				// ALSA, so there is nothing to drop/prepare here the way
+				// returnSeek does: nothing new reached the device since the
+				// seek that brought us into this call already left it in that
+				// state.
+				select {
+				case target := <-interruptedSeek:
+					return target, true, false
+				default:
+				}
+				break
+			}
 			framesDone := 0
 			for framesDone < pcm.nFrames {
 				// Check for a seek request.
@@ -1214,25 +1273,45 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	// Outer loop: play the current stream, then wait for a next-track URL
 	// or exit. This keeps the ALSA device open between consecutive tracks.
 	for {
-		seekTarget, doSeek, aborted := streamLoop(0)
+		seekTarget, doSeek, aborted := streamLoop(0, 0)
 		for doSeek {
-			// Re-open the HTTP stream and skip to the seek target.
-			// samplesPlayed is NOT reset here — streamLoop sets it after skipping,
-			// so GetPosition() never briefly returns 0 between seeks.
-			stream.Close()
-			_ = resp.Body.Close()
+			// Re-open the stream and skip to the seek target.
+			// samplesPlayed is NOT reset here — streamLoop sets it after
+			// skipping, so GetPosition() never briefly returns 0 between seeks.
+			//
+			// For a segmented stream the reopen starts at the segment holding
+			// the target instead of at segment zero, so only the remainder
+			// within that segment has to be decoded and discarded. Seeking a
+			// hi-res track otherwise meant re-fetching every segment before
+			// the target — tens of megabytes, no audio meanwhile, and the
+			// visualiser starved of PCM the whole time.
+			var skip, base uint64
+			seekSrc := src
+			if rate := sampleRate; rate > 0 {
+				trimmed, offset := src.SeekTo(float64(seekTarget) / float64(rate))
+				seekSrc = trimmed
+				skip = min(uint64(offset*float64(rate)), seekTarget)
+				base = seekTarget - skip
+				if n := len(src.URLs) - len(trimmed.URLs); n > 0 {
+					logger.L.Debug("segment-aligned seek",
+						"targetSec", float64(seekTarget)/float64(rate),
+						"skippedSegments", n, "decodeSec", offset)
+				}
+			} else {
+				skip = seekTarget
+			}
 
-			resp, stream, err = openStream(ctx, url)
+			stream.Close()
+			stream, err = openStream(ctx, seekSrc)
 			if err != nil {
 				logger.L.Error("failed to reopen stream for seek", "err", err)
 				return false
 			}
 
-			seekTarget, doSeek, aborted = streamLoop(seekTarget)
+			seekTarget, doSeek, aborted = streamLoop(skip, base)
 		}
 
 		stream.Close()
-		_ = resp.Body.Close()
 
 		// If the stream loop aborted due to an unrecoverable error (e.g. ALSA
 		// reacquire failed), exit without signalling a natural track completion
@@ -1252,16 +1331,15 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 
 		// Wait for the UI to provide the next track URL, or exit if the
 		// playlist is over / playback is cancelled.
-		nextURL, ok := p.awaitNextURL(ctx)
+		nextSrc, ok := p.awaitNextURL(ctx)
 		if !ok {
 			return true
 		}
 		logger.L.Debug("transitioning to next track")
-		url = nextURL
+		src = nextSrc
 
 		stream.Close()
-		_ = resp.Body.Close()
-		resp, stream, err = openStream(ctx, nextURL)
+		stream, err = openStream(ctx, nextSrc)
 		if err != nil {
 			logger.L.Error("failed to open next stream", "err", err)
 			return false
@@ -1302,7 +1380,6 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			newAH, newRel, raErr := reacquireALSA()
 			if raErr != nil {
 				logger.L.Error("reopen ALSA failed for next track", "err", raErr)
-				_ = resp.Body.Close()
 				return false
 			}
 			releaseReservation()
@@ -1335,7 +1412,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		p.mu.Lock()
 		p.doneCh = p.transitionDoneCh
 		p.transitionDoneCh = nil
-		p.currentURL = nextURL
+		p.currentURL = nextSrc
 		p.mu.Unlock()
 
 		logger.L.Debug("audio stream (next track)",
@@ -1365,19 +1442,19 @@ const nextURLTimeout = 5 * time.Second
 // track would never start and the done channel PlayNext handed its caller
 // would never close, leaving the UI showing a track playing with no audio and
 // no completion — a wedge that only quitting clears.
-func (p *Player) awaitNextURL(ctx context.Context) (string, bool) {
+func (p *Player) awaitNextURL(ctx context.Context) (StreamSource, bool) {
 	select {
 	case u := <-p.nextURLCh:
 		return u, true
 	case <-ctx.Done():
-		return "", false
+		return StreamSource{}, false
 	case <-time.After(nextURLTimeout):
 		if u, ok := p.takeQueuedURL(); ok {
 			logger.L.Debug("next-track URL arrived as the handoff window closed")
 			return u, true
 		}
 		logger.L.Debug("no next track within timeout, closing ALSA")
-		return "", false
+		return StreamSource{}, false
 	}
 }
 
@@ -1385,12 +1462,12 @@ func (p *Player) awaitNextURL(ctx context.Context) (string, bool) {
 // channel, without blocking. Used both to rescue a send that landed as the
 // handoff window closed and to reclaim one PlayNext queued for a loop that
 // turned out to have already exited.
-func (p *Player) takeQueuedURL() (string, bool) {
+func (p *Player) takeQueuedURL() (StreamSource, bool) {
 	select {
 	case u := <-p.nextURLCh:
 		return u, true
 	default:
-		return "", false
+		return StreamSource{}, false
 	}
 }
 
@@ -1497,6 +1574,19 @@ func (p *Player) Seek(seconds float64) error {
 	}
 
 	target := uint64(seconds * float64(sr))
+
+	// Report the target immediately rather than waiting for the playback
+	// loop to actually land there. samplesPlayed used to stay frozen at the
+	// pre-seek position for the whole reopen — network fetch, format probe,
+	// decode-discard toward the target, all of it — only jumping once that
+	// finished. GetPosition polled from the UI's once-a-second tick would
+	// then read that still-stale value if it landed mid-reopen, snapping the
+	// progress bar back to where it was for a moment before jumping forward
+	// again once the seek actually completed. The playback loop still writes
+	// its own (matching, by construction) value once it lands here for real,
+	// so this is a correction for the gap between the request and the loop
+	// noticing it, not a value that goes uncorrected.
+	atomic.StoreUint64(&p.samplesPlayed, target)
 
 	// Non-blocking send: drop a stale pending seek if the loop hasn't consumed
 	// it yet, then send the new target.

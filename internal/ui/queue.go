@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/carcuevas/gotidal/internal/tidal"
@@ -264,27 +265,32 @@ func (m *Model) queueHeader(t Theme) string {
 	name, isPlaylist := strings.CutPrefix(m.queueSource, "playlist:")
 	switch {
 	case isPlaylist && m.queueDirty:
-		return "QUEUE · " + name + " · " + meta + " " + t.Amber.Render("· edited — S save")
+		return "QUEUE · " + name + " · " + meta + " " + t.Amber.Render("· edited — : save")
 	case isPlaylist:
 		return "QUEUE · " + name + " · " + meta + " " + t.GreenT.Render("· synced")
 	case m.queueSource == "radio":
-		return "QUEUE · " + meta + " " + t.Amber.Render("· radio · unsaved — S save")
+		return "QUEUE · " + meta + " " + t.Amber.Render("· radio · unsaved — : save")
 	default:
 		return "QUEUE · " + meta
 	}
 }
 
-// beginSaveQueue saves the current queue as a brand-new playlist. The name is
-// derived from the source for now (a name prompt can come later); the command
-// creates the playlist and appends every queue track.
+// saveQueueAsNew saves the current queue as a brand-new playlist, asking for
+// its name first — Ctrl+S, and the command palette's "Save queue as
+// playlist…". The prompt's placeholder is suggestedQueueName(), so accepting
+// the suggestion is still one keystroke, but the name is no longer chosen
+// silently on the user's behalf. Enter in the prompt runs saveQueueCmd, which
+// retags the queue as backed by the new playlist.
 func (m Model) saveQueueAsNew() (tea.Model, tea.Cmd) {
 	if len(m.tracks) == 0 {
 		m.errText = "Queue is empty — nothing to save"
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 	}
-	name := m.suggestedQueueName()
-	cmd := m.saveQueueCmd(name)
-	return m, cmd
+	// nil marks the whole-queue flow, as opposed to the per-track "Add to
+	// playlist…" one — see updateNewPlaylistName.
+	m.addToPlaylistTracks = nil
+	m.openNewPlaylistPrompt(OverlayNone)
+	return m, textinput.Blink
 }
 
 // suggestedQueueName proposes a playlist name from the queue's origin or the
@@ -319,7 +325,7 @@ func (m *Model) saveQueueCmd(name string) tea.Cmd {
 		if err := client.AddTracksToPlaylist(ctx, uuid, ids); err != nil {
 			return errMsg(err)
 		}
-		return queueSavedMsg{uuid: uuid, name: name, count: len(ids)}
+		return queueSavedMsg{uuid: uuid, name: name, count: len(ids), created: true}
 	}
 }
 
