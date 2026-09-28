@@ -26,7 +26,7 @@ import (
 
 // knownDACs lists substrings to search for in /proc/asound/cards output.
 // First match wins, so order determines priority.
-var knownDACs = []string{"hidizs", "s9pro", "focusrite", "scarlett"}
+var knownDACs = []string{"hidizs", "s9pro", "focusrite", "scarlett", "fiio", "digihug"}
 
 // DeviceInfo describes an ALSA playback device.
 type DeviceInfo struct {
@@ -365,7 +365,7 @@ func detectDevice() (string, error) {
 			}
 		}
 	}
-	return "", errors.New("no supported DAC found — connect a Hidizs S9 Pro or Focusrite Scarlett Solo")
+	return "", errors.New("no supported DAC found — connect a Hidizs S9 Pro, Focusrite Scarlett Solo or FiiO E10")
 }
 
 // parseCardNum extracts the card number from an ALSA hw device string like "hw:1,0".
