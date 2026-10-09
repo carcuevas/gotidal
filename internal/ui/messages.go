@@ -117,6 +117,12 @@ type (
 		err error
 		gen uint64
 	}
+	// retryTrackMsg retries a track whose stream resolve was refused by
+	// Tidal's rate limit, once the cooldown has passed.
+	retryTrackMsg struct {
+		track tidal.Track
+		gen   uint64
+	}
 	// playbackFailedMsg is returned when the player refuses to start playback
 	// (e.g. the ALSA device could not be claimed, or the previous playback
 	// loop is still shutting down). doPlayTrack marks the track as playing

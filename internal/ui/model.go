@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -68,10 +69,13 @@ const (
 //nolint:recvcheck // tea.Model requires value-receiver Init/Update/View; helper methods mutate via pointer receiver
 type Model struct {
 	//nolint:containedctx // the long-lived TUI model holds the app context for command goroutines
-	ctx    context.Context
-	client *tidal.Client
-	store  *store.SecretsStore
-	player *player.Player
+	ctx context.Context
+	// cancelResolve aborts the in-flight stream resolve of the previous play
+	// (see doPlayTrack).
+	cancelResolve context.CancelFunc
+	client        *tidal.Client
+	store         *store.SecretsStore
+	player        *player.Player
 
 	// Navigation: which tab is active and the active modal Overlay. focusMain is
 	// always true post-init (there is no sidebar to cede focus to — every
@@ -729,6 +733,24 @@ func (m *Model) nextIndex() int {
 // track has already finished.
 const prefetchLeadSec = 10.0
 
+// streamMode picks the quality tiers a stream may be resolved at. Data Saver
+// wins (it also forces bit-perfect off); bit-perfect (DAC) output only plays
+// hi-res, since anything else would not be the untouched master the mode
+// promises; PipeWire output takes the best tier available.
+func (m *Model) streamMode() tidal.StreamMode {
+	switch {
+	case m.lowDataMode:
+		return tidal.ModeDataSaver
+	case m.bitPerfectMode:
+		return tidal.ModeHiResOnly
+	}
+	return tidal.ModeBest
+}
+
+// resolveDebounce is how long a user-initiated play waits before resolving
+// the stream, so a burst of skips only resolves the track it ends on.
+const resolveDebounce = 300 * time.Millisecond
+
 // maybePrefetchNext proactively resolves the next queued track's stream once
 // the current one is within prefetchLeadSec of ending, caching it in
 // prefetchedNextTrackID/prefetchedNextInfo so trackDoneMsg can hand
@@ -752,11 +774,11 @@ func (m *Model) maybePrefetchNext() tea.Cmd {
 	m.prefetchedNextTrackID = track.ID
 	client := m.client
 	ctx := m.ctx
-	lowData := m.lowDataMode
+	mode := m.streamMode()
 	gen := m.skipGen
 	trackID := track.ID
 	return func() tea.Msg {
-		info, err := client.GetStreamURL(ctx, trackID, lowData)
+		info, err := client.GetStreamURL(ctx, trackID, mode)
 		if err != nil {
 			logger.L.Debug("prefetch next track failed — trackDoneMsg will resolve it fresh instead", "trackID", trackID, "err", err)
 			return nil
@@ -770,7 +792,7 @@ func (m *Model) maybePrefetchNext() tea.Cmd {
 // In client mode it resolves the stream URL and forwards it to the parent
 // instance via MPRIS, then returns nil (no local playback state to track).
 func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
-	return m.doPlayTrack(track, m.player.Play, nil)
+	return m.doPlayTrack(track, m.player.Play, nil, true)
 }
 
 // playNextTrackCmd is like playTrackCmd but uses PlayNext to transition
@@ -778,7 +800,7 @@ func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 // Resolves the stream URL fresh — see playNextTrackFromPrefetchCmd for the
 // common case where maybePrefetchNext already resolved it in advance.
 func (m *Model) playNextTrackCmd(track tidal.Track) tea.Cmd {
-	return m.doPlayTrack(track, m.player.PlayNext, nil)
+	return m.doPlayTrack(track, m.player.PlayNext, nil, false)
 }
 
 // playNextTrackFromPrefetchCmd is playNextTrackCmd with the stream already
@@ -787,14 +809,20 @@ func (m *Model) playNextTrackCmd(track tidal.Track) tea.Cmd {
 // slow to land within playbackLoop's fixed 5-second gapless handoff window
 // (see mpv.go) if only started once the previous track has already ended.
 func (m *Model) playNextTrackFromPrefetchCmd(track tidal.Track, info tidal.StreamInfo) tea.Cmd {
-	return m.doPlayTrack(track, m.player.PlayNext, &info)
+	return m.doPlayTrack(track, m.player.PlayNext, &info, false)
 }
 
 // doPlayTrack starts playback of track via playFn (Play for a fresh start,
 // PlayNext for a gapless transition). prefetched, when non-nil, is an
 // already-resolved stream (see playNextTrackFromPrefetchCmd) that skips the
 // GetStreamURL round-trip; otherwise it's resolved here.
-func (m *Model) doPlayTrack(track tidal.Track, playFn func(player.StreamSource) (<-chan struct{}, error), prefetched *tidal.StreamInfo) tea.Cmd {
+//
+// debounce (set for user-initiated plays) waits resolveDebounce before
+// touching the API, and every new play cancels the previous one's in-flight
+// resolve: skipping quickly through a playlist then costs one stream resolve
+// for the track you land on, not one per track flicked past — which is what
+// used to run the account into Tidal's HTTP 429 rate limit.
+func (m *Model) doPlayTrack(track tidal.Track, playFn func(player.StreamSource) (<-chan struct{}, error), prefetched *tidal.StreamInfo, debounce bool) tea.Cmd {
 	if m.clientMode {
 		mc := m.mprisClient
 		if m.localPlaylist && len(m.tracks) > 0 {
@@ -854,10 +882,26 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(player.StreamSource) 
 	m.prefetchedNextTrackID = 0
 	_ = m.store.SaveLastTrackID(track.ID)
 	gen := m.skipGen
-	ctx := m.ctx
+	if m.cancelResolve != nil {
+		m.cancelResolve()
+	}
+	// Released by the next play's cancel (above) or with m.ctx.
+	parent := m.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	m.cancelResolve = cancel
 	client := m.client
-	lowData := m.lowDataMode
+	mode := m.streamMode()
 	return func() tea.Msg {
+		if debounce && prefetched == nil {
+			select {
+			case <-time.After(resolveDebounce):
+			case <-ctx.Done():
+				return nil // superseded by a newer skip before reaching the API
+			}
+		}
 		// Fetch fresh track metadata in parallel with the stream URL so we
 		// always have a cover UUID even when the cached entry predates cover support.
 		type freshResult struct {
@@ -880,7 +924,10 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(player.StreamSource) 
 			logger.L.Info("stream resolved (prefetched)", "trackID", track.ID, "ext", info.Ext, "quality", info.Quality)
 		} else {
 			var err error
-			info, err = client.GetStreamURL(ctx, track.ID, lowData)
+			info, err = client.GetStreamURL(ctx, track.ID, mode)
+			if ctx.Err() != nil {
+				return nil // superseded by a newer skip; its outcome is moot
+			}
 			if err != nil {
 				logger.L.Error("GetStreamURL failed", "trackID", track.ID, "err", err)
 				return skipErrMsg{err: err, gen: gen}
@@ -1509,6 +1556,52 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.skipGen {
 			break
 		}
+		if rl, limited := tidal.IsRateLimited(msg.err); limited && m.currentTrack != nil {
+			// Throttled: don't walk on down the queue — every next track
+			// would be refused too, and each attempt lengthens the throttle.
+			// Silence the previous track (the player is still playing it,
+			// which made a failed skip sound like "the same song again") and
+			// retry this one once the cooldown is over.
+			if m.player != nil && !m.player.IsPaused() {
+				_ = m.player.Pause()
+			}
+			m.errText = rl.Error()
+			m.advancing = false
+			m.isPlaying = false
+			m.pushState()
+			track, gen := *m.currentTrack, m.skipGen
+			return m, tea.Tick(rl.RetryAfter+500*time.Millisecond, func(time.Time) tea.Msg {
+				return retryTrackMsg{track: track, gen: gen}
+			})
+		}
+		if nh, notHiRes := errors.AsType[*tidal.NotHiResError](msg.err); notHiRes {
+			// Bit-perfect mode only plays hi-res: stop rather than play this
+			// track at a lower tier, or skip on as if it had failed. Silence
+			// the previous track, which the player is otherwise still playing,
+			// and forget it as current so Play cannot resume it under this
+			// track's title.
+			if m.player != nil && !m.player.IsPaused() {
+				_ = m.player.Pause()
+			}
+			title := "This track"
+			if m.currentTrack != nil {
+				title = "“" + m.currentTrack.Title + "”"
+			}
+			best := ""
+			if nh.Granted != "" {
+				best = " (best: " + nh.Granted.Label() + ")"
+			}
+			m.errText = title + " has no hi-res master" + best +
+				" — bit-perfect mode only plays hi-res; switch to PipeWire to play it"
+			m.advancing = false
+			m.isPlaying = false
+			m.currentTrack = nil
+			m.currPos = 0
+			m.duration = 0
+			m.currentQuality = ""
+			m.pushState()
+			return m, tea.Tick(8*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+		}
 		m.errText = msg.err.Error()
 		m.advancing = false
 		m.shufflePlayed = append(m.shufflePlayed, m.advanceBase())
@@ -1560,6 +1653,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.watchPlayerPaused(),
 			tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }),
 		)
+
+	case retryTrackMsg:
+		if msg.gen != m.skipGen {
+			break // the user has moved on since
+		}
+		m.errText = ""
+		// Play, not PlayNext: the player was paused above, and only Play
+		// clears that.
+		return m, m.playTrackCmd(msg.track)
 
 	case playNextMsg:
 		if msg.gen != m.skipGen {

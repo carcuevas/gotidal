@@ -191,7 +191,7 @@ func (m *Model) renderSettingsList(t Theme, w, h int) string {
 
 	bitPerfectLabel := "Off (PipeWire)"
 	if m.bitPerfectMode {
-		bitPerfectLabel = "On (DAC)"
+		bitPerfectLabel = "On (DAC, hi-res only)"
 	}
 	// Data Saver forces PipeWire, so while it is on this row reports what it
 	// is locked to and why instead of a value the user cannot change.

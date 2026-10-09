@@ -826,7 +826,7 @@ func (m Model) toggleBitPerfectMode() (tea.Model, tea.Cmd) {
 	m.player.SetDACMode(m.bitPerfectMode)
 	_ = m.store.SaveBitPerfectMode(m.bitPerfectMode)
 	if m.bitPerfectMode {
-		m.toast = "Bit-perfect quality: ON (DAC) — applies to your next track"
+		m.toast = "Bit-perfect quality: ON (DAC, hi-res only) — applies to your next track"
 	} else {
 		m.toast = "Bit-perfect quality: OFF (PipeWire) — applies to your next track"
 	}

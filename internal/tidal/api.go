@@ -410,14 +410,47 @@ func (s StreamInfo) URL() string {
 	return s.URLs[0]
 }
 
-// GetStreamURL resolves the stream URL for trackID, walking qualityLadder
-// (HI_RES_LOSSLESS down to LOW) top to bottom and returning the first tier
-// Tidal grants. lowData selects lowDataQualityLadder instead — HIGH then LOW
-// only, skipping both lossless FLAC tiers — for a metered-connection toggle
-// where bandwidth matters more than bit-perfectness.
-func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (StreamInfo, error) {
+// StreamMode selects which quality tiers GetStreamURL may grant.
+type StreamMode int
+
+const (
+	// ModeBest walks qualityLadder (HI_RES_LOSSLESS down to LOW) and takes
+	// the best tier Tidal grants. For PipeWire output, where anything plays.
+	ModeBest StreamMode = iota
+	// ModeDataSaver walks lowDataQualityLadder — HIGH then LOW only, skipping
+	// both lossless FLAC tiers — for a metered-connection toggle where
+	// bandwidth matters more than bit-perfectness.
+	ModeDataSaver
+	// ModeHiResOnly accepts HI_RES_LOSSLESS and nothing else: in bit-perfect
+	// (DAC) mode a track without a hi-res master is refused with
+	// *NotHiResError instead of silently playing at a lower tier.
+	ModeHiResOnly
+)
+
+// NotHiResError reports that a track has no hi-res master, under
+// ModeHiResOnly. Granted is the best tier Tidal offered instead ("" if none).
+type NotHiResError struct {
+	TrackID int
+	Granted Quality
+}
+
+func (e *NotHiResError) Error() string {
+	if e.Granted != "" {
+		return fmt.Sprintf("track %d is not available in hi-res (best is %s); bit-perfect mode only plays hi-res",
+			e.TrackID, e.Granted.Label())
+	}
+	return fmt.Sprintf("track %d is not available in hi-res; bit-perfect mode only plays hi-res", e.TrackID)
+}
+
+// GetStreamURL resolves the stream URL for trackID under mode (see
+// StreamMode), walking its ladder top to bottom and returning the first tier
+// Tidal grants.
+func (c *Client) GetStreamURL(ctx context.Context, trackID int, mode StreamMode) (StreamInfo, error) {
+	if mode == ModeHiResOnly {
+		return c.hiResOnly(ctx, trackID)
+	}
 	ladder := qualityLadder
-	if lowData {
+	if mode == ModeDataSaver {
 		ladder = lowDataQualityLadder
 	}
 
@@ -425,6 +458,11 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (S
 
 	for _, q := range ladder {
 		info, err := c.resolveQualityTier(ctx, trackID, q)
+		if _, limited := IsRateLimited(err); limited {
+			// Throttled: lower tiers would only be refused too, and every
+			// extra request lengthens the throttle.
+			return StreamInfo{}, err
+		}
 		if err != nil {
 			// Logged rather than surfaced: a higher tier failing and falling
 			// back to a lower one is normal (account entitlement, or no
@@ -475,6 +513,24 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int, lowData bool) (S
 		trackID, strings.Join(parts, "; "))
 }
 
+// hiResOnly resolves the HI_RES_LOSSLESS tier and nothing below it. Tidal
+// answers a hi-res request on a track without a hi-res master with a lower
+// tier rather than an error, so the granted tier is checked too.
+func (c *Client) hiResOnly(ctx context.Context, trackID int) (StreamInfo, error) {
+	info, err := c.playbackInfo(ctx, trackID, QualityHiRes)
+	if _, limited := IsRateLimited(err); limited {
+		return StreamInfo{}, err
+	}
+	if err != nil {
+		logger.L.Debug("hi-res tier unavailable", "trackID", trackID, "err", err)
+		return StreamInfo{}, &NotHiResError{TrackID: trackID, Granted: ""}
+	}
+	if info.Quality != QualityHiRes {
+		return StreamInfo{}, &NotHiResError{TrackID: trackID, Granted: info.Quality}
+	}
+	return info, nil
+}
+
 // resolveQualityTier resolves one tier, preferring playbackinfopostpaywall —
 // the only endpoint that can express a hi-res DASH presentation, and the only
 // one that reports the source bit depth and sample rate — and falling back to
@@ -487,6 +543,9 @@ func (c *Client) resolveQualityTier(ctx context.Context, trackID int, q Quality)
 	info, err := c.playbackInfo(ctx, trackID, q)
 	if err == nil {
 		return info, nil
+	}
+	if _, limited := IsRateLimited(err); limited {
+		return StreamInfo{}, err
 	}
 	logger.L.Debug("playbackinfo failed, falling back to urlpostpaywall",
 		"trackID", trackID, "quality", q, "err", err)

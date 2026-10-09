@@ -40,6 +40,9 @@ type Client struct {
 	// mu guards Session's token fields against the concurrent Token() calls
 	// oauth2.Transport makes from every in-flight request.
 	mu sync.Mutex
+
+	// limiter is the client-wide HTTP 429 cooldown shared by every request.
+	limiter rateLimiter
 }
 
 type Session struct {
@@ -247,16 +250,17 @@ func (c *Client) RevokeToken(ctx context.Context, token string) error {
 }
 
 func (c *Client) GetAuthClient(ctx context.Context) *http.Client {
-	if c.Transport != nil {
-		// Wrap the custom transport in an oauth2.Transport so the Authorization
-		// header is still added, but the actual round-trip goes through our
-		// injected transport (useful for tests).
-		return &http.Client{
-			Transport: &oauth2.Transport{
-				Source: c.TokenSource(ctx),
-				Base:   c.Transport,
-			},
-		}
+	// The custom transport, when set, replaces the base round-tripper (used
+	// in tests); oauth2.Transport still adds the Authorization header. Every
+	// request also goes through the shared 429 cooldown (see ratelimit.go).
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
 	}
-	return oauth2.NewClient(ctx, c.TokenSource(ctx))
+	return &http.Client{
+		Transport: &oauth2.Transport{
+			Source: c.TokenSource(ctx),
+			Base:   &limitedTransport{l: &c.limiter, base: base},
+		},
+	}
 }
