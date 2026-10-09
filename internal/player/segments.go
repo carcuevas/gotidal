@@ -218,6 +218,13 @@ func (r *segmentReader) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, io.ErrClosedPipe
 	}
+	// Once cancelled, stop — even if the producer had already buffered the
+	// rest of the stream and finished cleanly. Otherwise whether a cancel is
+	// honoured depends on a race with the producer, and a stopped track could
+	// keep feeding the decoder from its read-ahead.
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
 	r.ensureStarted()
 
 	for len(r.cur) == 0 {
