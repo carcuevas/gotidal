@@ -248,7 +248,7 @@ func TestGetStreamURL_HiResFromDASHManifest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 206514049, false)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 206514049, tidal.ModeBest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestGetStreamURL_BTSManifest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, tidal.ModeBest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestGetStreamURL_FallsBackToURLPostPaywall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, tidal.ModeBest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func TestGetStreamURL_FallsBackThroughQualities(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, tidal.ModeBest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestGetStreamURL_AllQualitiesFail(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
+	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123, tidal.ModeBest)
 	if err == nil {
 		t.Fatal("expected error when all qualities fail")
 	}
@@ -399,7 +399,7 @@ func TestGetStreamURL_EmptyURLs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123, false)
+	_, err := newTestClient(srv).GetStreamURL(context.Background(), 123, tidal.ModeBest)
 	if err == nil {
 		t.Fatal("expected error for empty URLs in response")
 	}
@@ -424,7 +424,7 @@ func TestGetStreamURL_LowDataSkipsLosslessTiers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, true)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123, tidal.ModeDataSaver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +843,7 @@ func TestGetStreamURL_LossyGrantDoesNotEndTheLadder(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 69144305, false)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 69144305, tidal.ModeBest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -879,7 +879,7 @@ func TestGetStreamURL_LossyGrantIsFineWhenRequested(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 1, true)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 1, tidal.ModeDataSaver)
 	if err != nil {
 		t.Fatal(err)
 	}

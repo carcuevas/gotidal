@@ -163,7 +163,7 @@ func TestStreamLadderErrorNamesEveryTier(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	_, err := c.GetStreamURL(context.Background(), 363761094, false)
+	_, err := c.GetStreamURL(context.Background(), 363761094, ModeBest)
 	if err == nil {
 		t.Fatal("expected an error when every tier is refused")
 	}
@@ -200,7 +200,7 @@ func TestStreamLadderErrorLowDataNamesOnlyItsTiers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(srv).GetStreamURL(context.Background(), 1, true)
+	_, err := newTestClient(srv).GetStreamURL(context.Background(), 1, ModeDataSaver)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -236,7 +236,7 @@ func TestStreamLadderErrorKeepsDifferingReasons(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(srv).GetStreamURL(context.Background(), 1, false)
+	_, err := newTestClient(srv).GetStreamURL(context.Background(), 1, ModeBest)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -259,7 +259,7 @@ func TestStreamLadderStopsAtTheFirstGrantedTier(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, err := newTestClient(srv).GetStreamURL(context.Background(), 1, false)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 1, ModeBest)
 	if err != nil {
 		t.Fatalf("GetStreamURL: %v", err)
 	}

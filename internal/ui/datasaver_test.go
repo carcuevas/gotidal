@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/carcuevas/gotidal/internal/tidal"
+
 	"github.com/carcuevas/gotidal/internal/player"
 )
 
@@ -89,5 +91,24 @@ func TestSettingsRowShowsBitPerfectLockedByDataSaver(t *testing.T) {
 	out := m.renderSettingsList(m.theme, 60, 20)
 	if !strings.Contains(out, "locked by Data Saver") {
 		t.Errorf("with Data Saver on, expected the row to say it is locked; got:\n%s", out)
+	}
+}
+
+// Data Saver always wins; otherwise bit-perfect output is hi-res only and
+// PipeWire output takes the best tier available.
+func TestStreamMode(t *testing.T) {
+	for _, c := range []struct {
+		lowData, bitPerfect bool
+		want                tidal.StreamMode
+	}{
+		{false, false, tidal.ModeBest},
+		{false, true, tidal.ModeHiResOnly},
+		{true, false, tidal.ModeDataSaver},
+		{true, true, tidal.ModeDataSaver},
+	} {
+		m := &Model{lowDataMode: c.lowData, bitPerfectMode: c.bitPerfect}
+		if got := m.streamMode(); got != c.want {
+			t.Errorf("lowData=%v bitPerfect=%v: %v, want %v", c.lowData, c.bitPerfect, got, c.want)
+		}
 	}
 }
